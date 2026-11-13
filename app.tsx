@@ -1,6 +1,8 @@
 // Provider icon for the "Claude Code (Bedrock)" ACP agent (provider id
 // acp-claude-bedrock, registered in provider-acp's customAgents): the Claude
-// mark with a small AWS badge. Keep in sync with assets/logo.svg.
+// mark with an AWS badge of about the same size. assets/logo.svg is the
+// monochrome version of the same layout (bb renders the branding icon as a
+// single-colour shape): keep the two in sync.
 import { useId } from "react";
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 
@@ -13,16 +15,21 @@ function ClaudeBedrockIcon({ className }: { className?: string }) {
     // inside bb's min-w-max icon wrapper; the host className still overrides via CSS
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="16" height="16" className={className} aria-hidden="true">
       <defs>
-        <mask id={mask}>
+        {/* the Claude mark runs under the badge; cut a gap around the badge */}
+        <mask id={mask} maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="1200">
           <rect width="1200" height="1200" fill="#fff" />
-          <rect x="560" y="640" width="660" height="580" rx="170" fill="#000" />
+          <rect x="470" y="591" width="780" height="659" rx="208" fill="#000" />
         </mask>
       </defs>
-      <path fill="#D97757" mask={`url(#${mask})`} d={CLAUDE_MARK} />
-      {/* solid AWS-orange badge: readable on light and dark; currentColor ring follows the theme text */}
-      <rect x="620" y="700" width="560" height="460" rx="130" fill="#FF9900" stroke="currentColor" strokeWidth="40" />
-      <path d="M720 900 Q900 1050 1080 900" fill="none" stroke="#232F3E" strokeWidth="80" strokeLinecap="round" />
-      <path d="M1000 860 L1095 885 L1060 975" fill="none" stroke="#232F3E" strokeWidth="64" strokeLinecap="round" strokeLinejoin="round" />
+      <g mask={`url(#${mask})`}>
+        <path fill="#D97757" transform="scale(0.6667)" d={CLAUDE_MARK} />
+      </g>
+      {/* AWS badge, about as wide as the Claude mark, in the bottom-right corner */}
+      <g transform="translate(520 641) scale(1.2143) translate(-620 -700)">
+        <rect x="620" y="700" width="560" height="460" rx="130" fill="#FF9900" />
+        <path d="M720 900 Q900 1050 1080 900" fill="none" stroke="#232F3E" strokeWidth="80" strokeLinecap="round" />
+        <path d="M1000 860 L1095 885 L1060 975" fill="none" stroke="#232F3E" strokeWidth="64" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
     </svg>
   );
 }
