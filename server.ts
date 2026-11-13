@@ -63,7 +63,7 @@ export default function plugin(bb: BbPluginApi) {
     discount: {
       type: "number",
       label: "Price factor",
-      description: "Optional multiplier on Claude Code's list-price cost estimate, for a negotiated Bedrock discount or markup. 1 shows list price.",
+      description: "Optional multiplier on Claude Code's list-price cost estimate, for a negotiated Bedrock discount or markup (e.g. 0.8 for 20% below list). 1 shows list price.",
       default: 1,
     },
   });
@@ -95,7 +95,8 @@ export default function plugin(bb: BbPluginApi) {
           return { ...base, usage: { status: "error" as const, ...meta, message: `Could not read ${LEDGER}.` } };
         }
       }
-      const { monthlyBudgetUsd, discount } = await settings.get();
+      const { monthlyBudgetUsd, discount: factor } = await settings.get();
+      const discount = factor > 0 ? factor : 1;
       const budget = monthlyBudgetUsd > 0 ? monthlyBudgetUsd : 100;
       const now = new Date();
       const t = totals(parseLedger(text), now);

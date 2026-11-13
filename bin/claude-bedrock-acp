@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# bb ACP agent entry point: Claude Code on AWS Bedrock, served over ACP by
+# @agentclientprotocol/claude-agent-acp, behind claude-bedrock-acp-proxy.mjs
+# (next to this script). Register it in bb's provider-acp customAgents with id
+# "claude-bedrock" (provider acp-claude-bedrock); see the README.
+#
+# stdout is the ACP channel: never print anything to it.
+#
+# Configuration (environment, all optional):
+#   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key. If unset, read from the macOS
+#                             keychain (service CLAUDE_BEDROCK_KEYCHAIN_SERVICE,
+#                             default "claude-bedrock-token", account $USER);
+#                             without either, Claude Code uses the normal AWS
+#                             credential chain (AWS_PROFILE, SSO, ...).
+#   AWS_REGION                Bedrock region (default us-east-1).
+#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: claude-agent-acp
+#                             on PATH, else npx -y @agentclientprotocol/claude-agent-acp).
+#   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
+#                             on PATH, else the adapter's bundled one).
+#   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS: see the proxy.
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# bb starts agents with a minimal PATH; add the usual install locations
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+if [[ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ]] && command -v security >/dev/null; then
+    token=$(security find-generic-password -a "$USER" -s "${CLAUDE_BEDROCK_KEYCHAIN_SERVICE:-claude-bedrock-token}" -w 2>/dev/null || true)
+    if [[ -n "$token" ]]; then export AWS_BEARER_TOKEN_BEDROCK="$token"; fi
+fi
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION="${AWS_REGION:-us-east-1}"
+
+if [[ -z "${CLAUDE_CODE_EXECUTABLE:-}" ]] && command -v claude >/dev/null; then
+    CLAUDE_CODE_EXECUTABLE="$(command -v claude)"
+    export CLAUDE_CODE_EXECUTABLE
+fi
+
+if [[ -n "${CLAUDE_AGENT_ACP:-}" ]]; then
+    read -r -a adapter <<<"$CLAUDE_AGENT_ACP"
+elif command -v claude-agent-acp >/dev/null; then
+    adapter=(claude-agent-acp)
+else
+    adapter=(npx -y @agentclientprotocol/claude-agent-acp)
+fi
+
+exec node "$here/claude-bedrock-acp-proxy.mjs" "${adapter[@]}" "$@"

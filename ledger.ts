@@ -1,6 +1,6 @@
 // Bedrock cost ledger: ~/.local/state/claude-bedrock/cost.jsonl, appended by
-// the agent's ACP launcher (bb threads) and optionally other tools (terminal
-// sessions).
+// bin/claude-bedrock-acp-proxy.mjs (bb threads) and optionally other tools
+// (e.g. a Claude Code statusline for terminal sessions, src "cli").
 // Each line: { t: epoch ms, src: "bb" | "cli", key, usd } where usd is Claude
 // Code's running list-price cost of one session (key) in one process.
 
