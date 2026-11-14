@@ -195,7 +195,8 @@ export default function plugin(bb: BbPluginApi) {
       const discount = factor > 0 ? factor : 1;
       const budget = monthlyBudgetUsd > 0 ? monthlyBudgetUsd : 100;
       const now = new Date();
-      const t = totals(parseLedger(text), now);
+      // this provider's threads (src "bb", or no src in older lines) and terminal sessions ("cli")
+      const t = totals(parseLedger(text).filter((e) => e.src === undefined || e.src === "bb" || e.src === "cli"), now);
       const month = t.month * discount;
       const today = t.today * discount;
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();

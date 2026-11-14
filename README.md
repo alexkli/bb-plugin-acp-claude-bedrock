@@ -12,8 +12,9 @@ as **Claude Code (Bedrock ACP)** in the provider picker. It has these parts:
 - The bb plugin. It registers the launcher as the custom agent `claude-bedrock`
   (provider `acp-claude-bedrock`) in bb's ACP agents plugin and keeps that entry
   up to date, passes the plugin settings to the agent, gives the provider the
-  Claude mark with an AWS badge as its icon, and adds an estimated-spend entry
-  to bb's Provider usage panel. It uses only the public plugin SDK.
+  Claude mark with an AWS badge as its icon (monochrome, to tell it apart from
+  the colored icon of the Claude Bedrock provider plugin), and adds an
+  estimated-spend entry to bb's Provider usage panel. It uses only the public plugin SDK.
 
 ## Screenshots
 
@@ -111,9 +112,11 @@ are two plugin settings for it:
 The data comes from a local ledger,
 `${XDG_STATE_HOME:-~/.local/state}/claude-bedrock/cost.jsonl`, of Claude Code's
 own running list-price cost estimates. The proxy appends one line whenever a
-bb thread's cost changes. Other tools can append terminal sessions in the same
-format: `{"t": <epoch ms>, "src": "cli", "key": "<unique session id>", "usd": <running list-price USD>}`.
-Only spend recorded in the ledger is counted. This is an estimate, not your
+bb thread's cost changes (src `bb`). Other tools can append terminal sessions
+in the same format: `{"t": <epoch ms>, "src": "cli", "key": "<unique session id>", "usd": <running list-price USD>}`.
+The Claude Bedrock provider plugin writes to the same ledger (src
+`bb-claude-code`) for its own usage entry; this entry counts `bb` and `cli`
+lines only. Only spend recorded in the ledger is counted. This is an estimate, not your
 AWS bill.
 
 bb lists the entry under the raw provider id, because ACP custom agents don't

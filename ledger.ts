@@ -1,11 +1,18 @@
-// Bedrock cost ledger: ~/.local/state/claude-bedrock/cost.jsonl, appended by
-// bin/claude-bedrock-acp-proxy.mjs (bb threads) and optionally other tools
-// (e.g. a Claude Code statusline for terminal sessions, src "cli").
-// Each line: { t: epoch ms, src: "bb" | "cli", key, usd } where usd is Claude
-// Code's running list-price cost of one session (key) in one process.
+// Bedrock cost ledger: ~/.local/state/claude-bedrock/cost.jsonl, shared by
+// the Claude Bedrock ACP provider plugin (src "bb", from its ACP proxy), the
+// Claude Bedrock provider plugin (src "bb-claude-code", from its claude
+// wrapper) and optionally other tools (e.g. a Claude Code statusline for
+// terminal sessions, src "cli"). Each plugin's usage entry counts its own
+// sources.
+// Each line: { t: epoch ms, src, key, usd } where usd is Claude Code's running
+// list-price cost of one session (key) in one process.
+// The same file is in bb-plugin-acp-claude-bedrock and bb-plugin-claude-bedrock:
+// keep them in sync.
 
 export interface LedgerEntry {
   t: number;
+  /** Writer of the line; absent in lines from before sources were recorded. */
+  src?: string;
   key: string;
   usd: number;
 }
@@ -26,7 +33,7 @@ export function parseLedger(text: string): LedgerEntry[] {
     try {
       const e = JSON.parse(line) as Partial<LedgerEntry>;
       if (typeof e.t === "number" && typeof e.key === "string" && typeof e.usd === "number" && e.usd >= 0) {
-        entries.push({ t: e.t, key: e.key, usd: e.usd });
+        entries.push({ t: e.t, key: e.key, usd: e.usd, ...(typeof e.src === "string" ? { src: e.src } : {}) });
       }
     } catch {
       // a torn or foreign line: skip it
