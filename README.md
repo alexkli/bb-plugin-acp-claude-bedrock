@@ -125,3 +125,7 @@ unavailable" card for it.
 
 `bb plugin build` compiles the plugin into `dist/`, and
 `bb plugin reload claude-bedrock` reloads it. `npx tsc -p .` type-checks it.
+
+## License
+
+MIT

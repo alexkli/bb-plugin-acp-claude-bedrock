@@ -26,6 +26,12 @@
     "typescript": "^5.7.0"
   },
   "description": "Claude Code on AWS Bedrock as a bb ACP agent: launcher scripts, provider icon and an estimated-spend usage entry.",
+  "license": "MIT",
+  "author": "Alexander Klimetschek",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexkli/bb-plugin-claude-bedrock.git"
+  },
   "dependencies": {
     "zod": "^4.6.7"
   }
