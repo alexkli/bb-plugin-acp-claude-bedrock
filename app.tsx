@@ -2,7 +2,8 @@
 // acp-claude-bedrock, registered in provider-acp's customAgents): the Claude
 // mark with an AWS badge of about the same size. assets/logo.svg is the
 // monochrome version of the same layout (bb renders the branding icon as a
-// single-colour shape): keep the two in sync.
+// single-colour shape); assets/icon-color.svg and assets/icon.png (256 px,
+// for the marketplace) are this colored version. Keep them in sync.
 import { useId } from "react";
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 
