@@ -106,10 +106,12 @@ permission request itself, so the plan would be approved without asking you
 and Claude would go straight to implementing. The proxy holds that request
 and instead:
 
-- adds a link to the plan to Claude's message ("Plan ready for review"),
-  which bb opens in the side panel: the file Claude wrote under
-  `~/.claude/plans/`, or a copy of the plan text in
-  `~/.local/state/claude-bedrock/plans/`;
+- copies the plan into the thread's storage folder (`plans/<name>.md`) and
+  adds it as a tab to the thread's side panel. The copy follows Claude's plan
+  file (`~/.claude/plans/<name>.md`), so when you ask for changes the open tab
+  updates by itself. Adding the tab doesn't switch your window to the thread;
+  you see it when you open the thread. Claude's message also gets a "Plan
+  ready for review" link to it;
 - asks you a question, which bb shows in every permission mode, with
   Claude's options, such as "Yes, and use auto mode", "Yes, manually approve
   edits" and "No, keep planning" (at most four; bb can't show more).

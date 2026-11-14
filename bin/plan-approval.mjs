@@ -8,9 +8,8 @@
 // for the user. The proxy holds that request and asks bb an elicitation
 // question instead, which bb always shows, then answers the adapter with the
 // option the user picked. A question shows its text as one plain paragraph, so
-// the plan is not in it: the proxy adds a link to the plan file to Claude's
-// message, which bb opens in the side panel (bb thread open only opens files
-// inside the workspace, and plans are not).
+// the plan is not in it: the proxy opens it in the side panel and adds a link
+// to it to Claude's message.
 
 /** The adapter's option ids for this request all start with this (claude-agent-acp). */
 const EXIT_PLAN_OPTION_PREFIX = "exit-plan-";
@@ -71,6 +70,23 @@ export function planText(msg) {
   return typeof plan === "string" && plan.trim() !== "" ? plan.trim() : null;
 }
 
+/**
+ * The side-panel tab for a file in a thread's storage folder (`path` relative
+ * to it), with the id bb's app gives the same file, so a link to it focuses
+ * this tab instead of opening a second one.
+ */
+export function planTab(threadId, environmentId, path) {
+  return {
+    environmentId,
+    id: ["thread-storage-file-preview", encodeURIComponent(path), encodeURIComponent(`thread:${threadId}`)].join(":"),
+    isPinned: false,
+    kind: "thread-storage-file-preview",
+    lineRange: null,
+    path,
+    threadId,
+  };
+}
+
 /** The session/update that adds a link to the plan file to Claude's message. */
 export function planLinkUpdate(sessionId, planFile) {
   const name = planFile.split(/[\\/]/).pop();
@@ -98,7 +114,7 @@ const KEEP_PLANNING_HINT = " (then send your feedback)";
  * message after "No, keep planning", which keeps Claude in plan mode.
  */
 export function planApprovalQuestion(msg, questionId, planFile = null) {
-  const message = `Claude has finished planning. ${planFile ? "Open the plan from the link above." : "The plan is in the ExitPlanMode step above."} To change it, pick "No, keep planning" and send your feedback as a message.`;
+  const message = `Claude has finished planning. ${planFile ? "The plan is in a side panel tab (and linked above)." : "The plan is in the ExitPlanMode step above."} To change it, pick "No, keep planning" and send your feedback as a message.`;
   return {
     jsonrpc: "2.0",
     id: questionId,

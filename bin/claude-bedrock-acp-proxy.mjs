@@ -16,15 +16,20 @@
 // 4. Holds the permission request that ends plan mode ("Ready to code?") and
 //    asks bb an elicitation question instead, which bb shows even in Full
 //    Access, where it would answer the permission request itself (see
-//    plan-approval.mjs), after adding a link to the plan file to Claude's
-//    message. CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
+//    plan-approval.mjs). Before asking, it opens the plan in the thread's side
+//    panel: a copy in the thread's storage folder (BB_THREAD_STORAGE), kept in
+//    sync with Claude's plan file so the panel follows later edits, added as a
+//    tab to the thread's side panel (without switching anyone's view to the
+//    thread); Claude's message gets a link to it as well.
+//    CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { watchFile } from "node:fs";
+import { appendFile, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import {
   isPlanApprovalRequest,
@@ -32,6 +37,7 @@ import {
   planApprovalResult,
   planFileFromUpdate,
   planLinkUpdate,
+  planTab,
   planText,
 } from "./plan-approval.mjs";
 
@@ -69,20 +75,86 @@ let nextQuestion = 0;
 // the plan file Claude last wrote, by session id
 const planFiles = new Map();
 
-/** The plan file to show for a plan approval request: Claude's own, else a copy of the plan text. */
+// bb shows files in a thread's storage folder in its side panel and reloads
+// them when they change; files elsewhere it shows only from a link, without
+// reloading. So the plan is shown from a copy there.
+const STORAGE = process.env.BB_THREAD_STORAGE || null;
+const PLANS_DIR = STORAGE ? join(STORAGE, "plans") : join(LEDGER_DIR, "plans");
+// Claude's plan files and their copies in PLANS_DIR, kept in sync
+const planCopies = new Map();
+
+/** The copy of a plan file, created on first use and refreshed whenever the plan changes. */
+const copyOfPlan = async (source) => {
+  if (!STORAGE) return source;
+  const copy = join(PLANS_DIR, basename(source));
+  const refresh = () => copyFile(source, copy).catch(() => {});
+  if (!planCopies.has(source)) {
+    planCopies.set(source, copy);
+    // stat polling also survives editors that replace the file
+    watchFile(source, { interval: 1000 }, (now, before) => {
+      if (now.mtimeMs !== before.mtimeMs || now.size !== before.size) refresh();
+    });
+  }
+  await mkdir(PLANS_DIR, { recursive: true });
+  await copyFile(source, copy);
+  return copy;
+};
+
+/** The plan file to show for a plan approval request: a copy of Claude's, else the plan text written to one. */
 const planFileFor = async (msg) => {
   const own = planFiles.get(msg.params?.sessionId);
-  if (own) return own;
+  if (own) {
+    try {
+      return await copyOfPlan(own);
+    } catch {
+      // fall back to the plan text
+    }
+  }
   const text = planText(msg);
-  if (text === null) return null;
+  if (text === null) return own ?? null;
   try {
-    const dir = join(LEDGER_DIR, "plans");
-    await mkdir(dir, { recursive: true });
-    const path = join(dir, `${String(msg.params?.sessionId ?? RUN).replace(/[^\w.-]/g, "_")}-${Date.now()}.md`);
+    await mkdir(PLANS_DIR, { recursive: true });
+    const path = join(PLANS_DIR, `plan-${String(msg.params?.sessionId ?? RUN).replace(/[^\w.-]/g, "_")}-${Date.now()}.md`);
     await writeFile(path, text + "\n");
     return path;
   } catch {
-    return null;
+    return own ?? null;
+  }
+};
+
+/** Runs the bb CLI; resolves with its stdout, or null on failure. */
+const bbCli = (args) =>
+  new Promise((resolve) => {
+    execFile(process.env.BB_CLI || "bb", args, { timeout: 15000, encoding: "utf8" }, (error, stdout) =>
+      resolve(error ? null : stdout),
+    );
+  });
+
+/**
+ * Adds a thread-storage file as a tab to this thread's side panel, if it isn't
+ * one already. Unlike `bb thread open`, this only changes the thread's saved
+ * tabs: it doesn't switch anyone's window to the thread. Best effort.
+ */
+const addPanelTab = async (path) => {
+  const threadId = process.env.BB_THREAD_ID;
+  if (!STORAGE || !threadId || !path.startsWith(STORAGE + sep)) return;
+  const tab = planTab(threadId, process.env.BB_ENVIRONMENT_ID || null, relative(STORAGE, path).split(sep).join("/"));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const shown = await bbCli(["thread", "tabs", "show", threadId, "--json"]);
+    if (shown === null) return;
+    try {
+      const current = JSON.parse(shown);
+      if (current.tabs.some((t) => t.id === tab.id)) return;
+      const set = await bbCli([
+        "thread", "tabs", "set", threadId,
+        "--expected-revision", String(current.revision),
+        "--tabs-json", JSON.stringify([...current.tabs, tab]),
+        "--json",
+      ]);
+      if (set !== null) return; // else another client changed the tabs: retry
+    } catch {
+      return;
+    }
   }
 };
 
@@ -141,6 +213,7 @@ const forward = async (line) => {
     const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
     pendingPlanApprovals.set(questionId, msg);
     const planFile = await planFileFor(msg);
+    if (planFile) addPanelTab(planFile).catch(() => {});
     if (planFile && typeof msg.params?.sessionId === "string") {
       process.stdout.write(JSON.stringify(planLinkUpdate(msg.params.sessionId, planFile)) + "\n");
     }
@@ -148,7 +221,11 @@ const forward = async (line) => {
     return;
   }
   const planFile = planFileFromUpdate(msg);
-  if (planFile) planFiles.set(planFile[0], planFile[1]);
+  if (planFile) {
+    planFiles.set(planFile[0], planFile[1]);
+    // keep an open copy current when Claude edits the plan after it was shown
+    if (planCopies.has(planFile[1])) copyOfPlan(planFile[1]).catch(() => {});
+  }
   process.stdout.write(JSON.stringify(rewrite(msg)) + "\n");
 };
 
