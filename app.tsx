@@ -1,4 +1,4 @@
-// Provider icon for the "Claude Code (Bedrock)" ACP agent (provider id
+// Provider icon for the "Claude Code (Bedrock ACP)" ACP agent (provider id
 // acp-claude-bedrock, registered in provider-acp's customAgents): the Claude
 // mark with an AWS badge of about the same size. assets/logo.svg is the
 // monochrome version of the same layout (bb renders the branding icon as a

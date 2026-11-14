@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # bb ACP agent entry point: Claude Code on AWS Bedrock, served over ACP by
 # @agentclientprotocol/claude-agent-acp, behind claude-bedrock-acp-proxy.mjs
-# (next to this script). Register it in bb's provider-acp customAgents with id
-# "claude-bedrock" (provider acp-claude-bedrock); see the README.
+# (next to this script). The bb plugin registers this script in bb's
+# provider-acp customAgents (id "claude-bedrock", provider acp-claude-bedrock)
+# and passes its settings (API key, region, ...) as the variables below.
 #
 # stdout is the ACP channel: never print anything to it.
 #
 # Configuration (environment, all optional):
-#   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key. If unset, read from the macOS
+#   CLAUDE_BEDROCK_KEY_FILE   File with the Bedrock API key (the plugin writes it
+#                             from its settings).
+#   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key. If unset, read from the key file,
+#                             else from the macOS
 #                             keychain (service CLAUDE_BEDROCK_KEYCHAIN_SERVICE,
 #                             default "claude-bedrock-token", account $USER);
 #                             without either, Claude Code uses the normal AWS
@@ -24,9 +28,19 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # bb starts agents with a minimal PATH; add the usual install locations
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-if [[ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ]] && command -v security >/dev/null; then
+credentials="aws credential chain${AWS_PROFILE:+ (profile $AWS_PROFILE)}"
+if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
+    credentials="api key from environment"
+elif [[ -n "${CLAUDE_BEDROCK_KEY_FILE:-}" && -r "$CLAUDE_BEDROCK_KEY_FILE" ]]; then
+    AWS_BEARER_TOKEN_BEDROCK="$(head -n 1 "$CLAUDE_BEDROCK_KEY_FILE")"
+    export AWS_BEARER_TOKEN_BEDROCK
+    credentials="api key from plugin settings"
+elif command -v security >/dev/null; then
     token=$(security find-generic-password -a "$USER" -s "${CLAUDE_BEDROCK_KEYCHAIN_SERVICE:-claude-bedrock-token}" -w 2>/dev/null || true)
-    if [[ -n "$token" ]]; then export AWS_BEARER_TOKEN_BEDROCK="$token"; fi
+    if [[ -n "$token" ]]; then
+        export AWS_BEARER_TOKEN_BEDROCK="$token"
+        credentials="api key from keychain"
+    fi
 fi
 export CLAUDE_CODE_USE_BEDROCK=1
 export AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -44,4 +58,13 @@ else
     adapter=(npx -y @agentclientprotocol/claude-agent-acp)
 fi
 
+# one line per launch (never the key itself), for troubleshooting
+state="${XDG_STATE_HOME:-$HOME/.local/state}/claude-bedrock"
+mkdir -p "$state" 2>/dev/null &&
+    printf '%s region=%s credentials=%s adapter=%s\n' "$(date -u +%FT%TZ)" "$AWS_REGION" "$credentials" "${adapter[0]}" >>"$state/launcher.log" 2>/dev/null || true
+
+if ! command -v node >/dev/null; then
+    echo "claude-bedrock-acp: Node.js (node) was not found on PATH." >&2
+    exit 1
+fi
 exec node "$here/claude-bedrock-acp-proxy.mjs" "${adapter[@]}" "$@"

@@ -1,31 +1,30 @@
-# bb-plugin-claude-bedrock
+# bb-plugin-acp-claude-bedrock
 
-Claude Code on **AWS Bedrock** as an agent in [bb](https://getbb.app), shown as
-**Claude Code (Bedrock)** in the provider picker. It has these parts:
+Claude Code on **AWS Bedrock** as an ACP agent in [bb](https://getbb.app), shown
+as **Claude Code (Bedrock ACP)** in the provider picker. It has these parts:
 
 - `bin/claude-bedrock-acp`: the launcher script. It runs Claude Code in Bedrock
   mode over ACP, using
   [`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp).
 - `bin/claude-bedrock-acp-proxy.mjs`: a small ACP proxy started by the
-  launcher. It applies an optional price factor to the cost bb shows, hides the
+  launcher. It applies the price factor to the cost bb shows, hides the
   subagent picker option and records spend in a local ledger.
-- The bb plugin, which gives the provider (`acp-claude-bedrock`) the Claude mark
-  with an AWS badge as its icon, and adds an estimated-spend entry to bb's
-  Provider usage panel.
-
-The agent itself is a bb ACP custom agent. This plugin does not register a
-provider and uses only the public plugin SDK.
+- The bb plugin. It registers the launcher as the custom agent `claude-bedrock`
+  (provider `acp-claude-bedrock`) in bb's ACP agents plugin and keeps that entry
+  up to date, passes the plugin settings to the agent, gives the provider the
+  Claude mark with an AWS badge as its icon, and adds an estimated-spend entry
+  to bb's Provider usage panel. It uses only the public plugin SDK.
 
 ## Screenshots
 
-**Claude Code (Bedrock)** in the model picker, with its estimated spend in the
+**Claude Code (Bedrock ACP)** in the model picker, with its estimated spend in the
 Provider usage panel (bottom left):
 
-![New thread with the Claude Code (Bedrock) provider selected and its model list open; the Provider usage panel shows this month and today against the budget](docs/overview.png)
+![New thread with the Claude Code (Bedrock ACP) provider selected and its model list open; the Provider usage panel shows this month and today against the budget](docs/overview.png)
 
-The plugin settings: monthly budget and price factor.
+The plugin settings: API key, region, adapter, budget and price factor.
 
-![Claude Bedrock provider settings with Monthly budget and Price factor](docs/settings.png)
+![Claude Bedrock ACP provider settings with API key, region, profile, adapter command, monthly budget and price factor](docs/settings.png)
 
 ## Requirements
 
@@ -39,85 +38,75 @@ The plugin settings: monthly budget and price factor.
 
 ## Setup
 
-1. Clone the repo, then install and build the plugin:
+1. Install the plugin. From a clone:
 
    ```sh
-   git clone https://github.com/alexkli/bb-plugin-claude-bedrock.git
-   cd bb-plugin-claude-bedrock
+   git clone https://github.com/alexkli/bb-plugin-acp-claude-bedrock.git
+   cd bb-plugin-acp-claude-bedrock
    npm install
    bb plugin build
    bb plugin install .
    ```
 
-2. Install the ACP adapter (optional; without it, the launcher uses `npx`,
-   which is slower to start):
+   On load, the plugin adds **Claude Code (Bedrock ACP)** to bb's ACP agents.
+   It updates that entry on every load, so a plugin update that moves the
+   launcher needs no action. Other custom agents are left alone.
+
+2. Open Settings → Plugins → **Claude Bedrock ACP provider** and set:
+   - **Bedrock API key**. bb stores it as a secret setting. The plugin writes
+     it to a file only your user can read
+     (`~/.bb/plugins/acp-claude-bedrock/host-data/bedrock-api-key`) and gives
+     the agent only that file's path, so the key never appears in the ACP
+     agents config. Without a key, the launcher uses the macOS keychain item
+     `claude-bedrock-token` if present
+     (`security add-generic-password -a "$USER" -s claude-bedrock-token -w`),
+     else the normal AWS credential chain. Set **AWS profile** for the latter.
+   - **AWS region**, default `us-east-1`.
+
+3. Optional: install the ACP adapter once. Without it, the launcher runs it
+   through `npx`, which is slower to start:
 
    ```sh
    npm install -g @agentclientprotocol/claude-agent-acp
    ```
 
-3. Provide credentials. bb starts agents without your shell profile, so the
-   launcher looks in these places, in order:
-   - `AWS_BEARER_TOKEN_BEDROCK` in the agent's `env` (step 4).
-   - On macOS, the keychain. Store the key once:
+   Or point **ACP adapter command** at a pinned install, e.g.
+   `node /path/to/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js`.
 
-     ```sh
-     security add-generic-password -a "$USER" -s claude-bedrock-token -w
-     ```
+4. Pick **Claude Code (Bedrock ACP)** in a new thread.
 
-   - Otherwise, the normal AWS credential chain. For example, set `AWS_PROFILE`
-     in the agent's `env`.
+### Settings and launcher variables
 
-4. Register the agent in bb, either in the ACP agents plugin's settings
-   (Custom agents) or with `bb plugin config provider-acp set customAgents '<json>'`.
-   The id must be `claude-bedrock`, so that the provider id is
-   `acp-claude-bedrock`:
+The plugin passes its settings to the agent as environment variables in the
+agent entry. You can add more variables to the entry's `env` in the ACP agents
+settings; the plugin keeps them.
 
-   ```json
-   [
-     {
-       "id": "claude-bedrock",
-       "displayName": "Claude Code (Bedrock)",
-       "command": "/absolute/path/to/bb-plugin-claude-bedrock/bin/claude-bedrock-acp",
-       "args": [],
-       "env": { "AWS_REGION": "us-west-2" },
-       "nativeSkillRoots": { "user": [".claude/skills"], "project": [".claude/skills"] }
-     }
-   ]
-   ```
-
-   If you already have custom agents, add this entry to the existing array.
-
-5. Pick **Claude Code (Bedrock)** in a new thread.
-
-### Launcher options
-
-Set these in the custom agent's `env`. All are optional.
-
-| Variable | Default | |
+| Setting | Variable | Default |
 | --- | --- | --- |
-| `AWS_REGION` | `us-east-1` | Bedrock region |
-| `AWS_BEARER_TOKEN_BEDROCK` | keychain | Bedrock API key |
-| `CLAUDE_BEDROCK_KEYCHAIN_SERVICE` | `claude-bedrock-token` | Keychain service name for the key |
-| `CLAUDE_AGENT_ACP` | `claude-agent-acp`, else `npx` | Command that runs the ACP adapter |
-| `CLAUDE_CODE_EXECUTABLE` | `claude` on PATH | Claude Code binary |
-| `CLAUDE_BEDROCK_PRICE_FACTOR` | `1` | Multiplier on the cost bb shows in a thread |
-| `CLAUDE_BEDROCK_ACP_HIDE_OPTIONS` | `agent` | Comma-separated ACP config options to hide |
+| AWS region | `AWS_REGION` | `us-east-1` |
+| AWS profile | `AWS_PROFILE` | unset |
+| ACP adapter command | `CLAUDE_AGENT_ACP` | `claude-agent-acp` on PATH, else `npx` |
+| Price factor | `CLAUDE_BEDROCK_PRICE_FACTOR` | `1` |
+| Bedrock API key | `CLAUDE_BEDROCK_KEY_FILE` (path to the key file) | unset |
 
-Other Claude Code variables, such as `ANTHROPIC_MODEL` or
-`ANTHROPIC_DEFAULT_HAIKU_MODEL`, pass through as well.
+Launcher-only variables: `CLAUDE_CODE_EXECUTABLE` (default `claude` on PATH),
+`CLAUDE_BEDROCK_KEYCHAIN_SERVICE` (default `claude-bedrock-token`) and
+`CLAUDE_BEDROCK_ACP_HIDE_OPTIONS` (default `agent`, comma-separated ACP config
+options to hide). Other Claude Code variables, such as `ANTHROPIC_MODEL`, pass
+through as well. Each launch appends one line (time, region, credential source,
+adapter; never the key) to `~/.local/state/claude-bedrock/launcher.log`.
 
 ## Usage entry
 
 The plugin adds estimated spend for `acp-claude-bedrock` to bb's Provider usage
 panel and footer: this month and today, measured against a monthly budget.
 Today's budget is the monthly budget divided by the days in the month. There
-are two plugin settings:
+are two plugin settings for it:
 
 - **Monthly budget (USD)**, default 100.
 - **Price factor**, default 1 (list price). If you have a negotiated Bedrock
-  discount or markup, set it here, e.g. 0.8 for 20% below list. Use the same
-  value as `CLAUDE_BEDROCK_PRICE_FACTOR`.
+  discount or markup, set it here, e.g. 0.8 for 20% below list. It also
+  applies to the cost bb shows in each thread.
 
 The data comes from a local ledger,
 `${XDG_STATE_HOME:-~/.local/state}/claude-bedrock/cost.jsonl`, of Claude Code's
@@ -135,7 +124,7 @@ unavailable" card for it.
 ## Development
 
 `bb plugin build` compiles the plugin into `dist/`, and
-`bb plugin reload claude-bedrock` reloads it. `npx tsc -p .` type-checks it.
+`bb plugin reload acp-claude-bedrock` reloads it. `npx tsc -p .` type-checks it.
 
 ## License
 

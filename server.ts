@@ -1,14 +1,24 @@
-import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { parseLedger, totals } from "./ledger";
+import { provisionAgent } from "./agent-entry";
 
-// Usage entry in bb's Provider usage panel/footer for the existing ACP agent
-// provider "Claude Code (Bedrock)". No extra provider is registered: bb's
-// provider-usage plugin discovers this source through the RPC methods below.
+// Claude Code on AWS Bedrock as a bb ACP agent:
+// - registers the agent (id "claude-bedrock", provider "acp-claude-bedrock") in
+//   bb's ACP agents plugin, pointing at this plugin's own bin/claude-bedrock-acp,
+//   on every load (the install folder changes with each plugin update);
+// - passes region, price factor and the other settings to that agent through
+//   the entry's env; the API key (a secret setting) goes to a 0600 file whose
+//   path the launcher gets, so it never lands in the ACP agents config;
+// - publishes estimated spend for bb's Provider usage panel/footer through the
+//   provider-usage RPC methods below.
 const PROVIDER_ID = "acp-claude-bedrock";
+const PACKAGE_NAME = "bb-plugin-acp-claude-bedrock";
 const LIST_RESOURCES = "provider-usage.v1.listResources";
 const GET_RESOURCE = "provider-usage.v1.getResource";
 
@@ -52,21 +62,107 @@ const cents = (usd: number) => Math.round(usd * 100);
 const usd = (amount: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
 
+/** This plugin's root: the nearest folder up from the bundle with our package.json. */
+function findPluginDir(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i++) {
+    const manifest = join(dir, "package.json");
+    if (existsSync(manifest) && readFileSync(manifest, "utf8").includes(`"${PACKAGE_NAME}"`)) return dir;
+    dir = dirname(dir);
+  }
+  throw new Error(`${PACKAGE_NAME}: could not find the plugin folder from ${fileURLToPath(import.meta.url)}`);
+}
+
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
+    apiKey: {
+      type: "string",
+      secret: true,
+      label: "Bedrock API key",
+      description:
+        "Amazon Bedrock API key. Optional: without it, the agent uses the macOS keychain item \"claude-bedrock-token\" if present, else the normal AWS credential chain (AWS profile, SSO, ...).",
+    },
+    region: {
+      type: "string",
+      label: "AWS region",
+      description: "Bedrock region, e.g. us-east-1 or us-west-2.",
+      default: "us-east-1",
+    },
+    awsProfile: {
+      type: "string",
+      label: "AWS profile",
+      description: "Optional AWS profile for the AWS credential chain, used when no API key is set.",
+    },
+    adapterCommand: {
+      type: "string",
+      label: "ACP adapter command",
+      description:
+        "Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: claude-agent-acp on PATH, else npx.",
+    },
     monthlyBudgetUsd: {
       type: "number",
       label: "Monthly budget (USD)",
       description: "Scale for the usage bar. Today's bar uses this budget divided by the days in the month.",
       default: 100,
     },
-    discount: {
+    priceFactor: {
       type: "number",
       label: "Price factor",
-      description: "Optional multiplier on Claude Code's list-price cost estimate, for a negotiated Bedrock discount or markup (e.g. 0.8 for 20% below list). 1 shows list price.",
+      description: "Multiplier on Claude Code's list-price cost estimate, for a negotiated Bedrock discount or markup (e.g. 0.8 for 20% below list). Applies to the cost shown in threads and to the usage entry. 1 shows list price.",
       default: 1,
     },
   });
+
+  const launcher = join(findPluginDir(), "bin", "claude-bedrock-acp");
+
+  // The API key is a secret setting (bb keeps it out of its db and the
+  // frontend). bb's ACP agents plugin only passes an agent's configured env to
+  // the agent process, so the key goes into a 0600 file in this plugin's data
+  // folder and the agent entry carries only that file's path.
+  async function keyFilePath(): Promise<string> {
+    let dataDir = process.env.BB_DATA_DIR ?? join(homedir(), ".bb");
+    try {
+      const config = await bb.sdk.system.config();
+      if (config.dataDir.length > 0) dataDir = config.dataDir;
+    } catch {
+      // keep the default
+    }
+    return join(dataDir, "plugins", "acp-claude-bedrock", "host-data", "bedrock-api-key");
+  }
+
+  async function syncKeyFile(apiKey: string | undefined): Promise<string | undefined> {
+    const path = await keyFilePath();
+    const key = apiKey?.trim() ?? "";
+    if (key === "") {
+      await rm(path, { force: true });
+      return undefined;
+    }
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(path, `${key}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+    return path;
+  }
+
+  let syncing = Promise.resolve();
+  const sync = () => {
+    syncing = syncing
+      .then(async () => {
+        const s = await settings.get();
+        const keyFile = await syncKeyFile(s.apiKey);
+        await provisionAgent(bb, launcher, {
+          AWS_REGION: s.region.trim() || "us-east-1",
+          AWS_PROFILE: s.awsProfile?.trim(),
+          CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
+          CLAUDE_BEDROCK_PRICE_FACTOR: String(s.priceFactor > 0 ? s.priceFactor : 1),
+          CLAUDE_BEDROCK_KEY_FILE: keyFile,
+        });
+      })
+      .catch((error: unknown) => {
+        bb.log.error(`Could not update the Claude Code (Bedrock ACP) agent: ${String(error)}`);
+      });
+  };
+  sync();
+  settings.onChange(() => sync());
 
   bb.rpc.register(usageRpcContract, {
     [LIST_RESOURCES]: async () => {
@@ -79,7 +175,7 @@ export default function plugin(bb: BbPluginApi) {
           accountKey: null,
           id: host.id,
           providerId: PROVIDER_ID,
-          label: "Claude Code (Bedrock)",
+          label: "Claude Code (Bedrock ACP)",
           scope: { kind: "host" as const, hostId: host.id, hostName: host.name },
         }],
       };
@@ -95,7 +191,7 @@ export default function plugin(bb: BbPluginApi) {
           return { ...base, usage: { status: "error" as const, ...meta, message: `Could not read ${LEDGER}.` } };
         }
       }
-      const { monthlyBudgetUsd, discount: factor } = await settings.get();
+      const { monthlyBudgetUsd, priceFactor: factor } = await settings.get();
       const discount = factor > 0 ? factor : 1;
       const budget = monthlyBudgetUsd > 0 ? monthlyBudgetUsd : 100;
       const now = new Date();
@@ -137,6 +233,6 @@ export default function plugin(bb: BbPluginApi) {
     },
   }, {
     experimental_discoverable: true,
-    experimental_description: "Publishes estimated Claude Code (Bedrock) spend for BB's Provider Usage plugin.",
+    experimental_description: "Publishes estimated Claude Code (Bedrock ACP) spend for BB's Provider Usage plugin.",
   });
 }

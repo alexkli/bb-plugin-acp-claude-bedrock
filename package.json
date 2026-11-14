@@ -1,7 +1,7 @@
 {
-  "name": "bb-plugin-claude-bedrock",
+  "name": "bb-plugin-acp-claude-bedrock",
   "version": "0.1.0",
-  "description": "Run Claude Code threads on your AWS Bedrock account, with estimated monthly spend in the provider usage panel.",
+  "description": "Run Claude Code threads over ACP on your AWS Bedrock account, with estimated monthly spend in the provider usage panel.",
   "keywords": [
     "bb-plugin",
     "claude-code",
@@ -14,7 +14,7 @@
   "author": "Alexander Klimetschek",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alexkli/bb-plugin-claude-bedrock.git"
+    "url": "https://github.com/alexkli/bb-plugin-acp-claude-bedrock.git"
   },
   "type": "module",
   "engines": {
@@ -22,8 +22,8 @@
     "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
-    "name": "Claude Bedrock provider",
-    "description": "Run Claude Code threads on your AWS Bedrock account, with estimated monthly spend in the provider usage panel.",
+    "name": "Claude Bedrock ACP provider",
+    "description": "Run Claude Code threads over ACP on your AWS Bedrock account, with estimated monthly spend in the provider usage panel.",
     "branding": {
       "icon": "./assets/logo.svg"
     },
