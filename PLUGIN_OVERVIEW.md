@@ -4,7 +4,7 @@
 - Setup in the plugin settings: Bedrock API key, AWS region or profile. The key is stored as a bb secret and never written to the agent config.
 - **Estimated spend** in the Provider usage panel and footer: this month and today, against a monthly budget you set.
 - A **price factor** for negotiated Bedrock pricing, for the cost bb shows in each thread and for the usage entry.
-- Plan mode that waits for you: when Claude finishes a plan, it opens in the side panel and you get Claude's "Ready to code?" question, even in Full Access, where bb would otherwise approve it on its own.
+- Plan mode that waits for you: when Claude finishes a plan, you get a link that opens it in the side panel and Claude's "Ready to code?" question, even in Full Access, where bb would otherwise approve it on its own.
 - A provider icon: the Claude mark with an AWS badge.
 
 ## How it works

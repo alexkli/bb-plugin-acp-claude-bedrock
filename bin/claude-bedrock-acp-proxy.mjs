@@ -16,8 +16,8 @@
 // 4. Holds the permission request that ends plan mode ("Ready to code?") and
 //    asks bb an elicitation question instead, which bb shows even in Full
 //    Access, where it would answer the permission request itself (see
-//    plan-approval.mjs), and opens the plan file in the thread's side panel
-//    with `bb thread open`. CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
+//    plan-approval.mjs), after adding a link to the plan file to Claude's
+//    message. CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
 import { spawn } from "node:child_process";
@@ -31,6 +31,7 @@ import {
   planApprovalQuestion,
   planApprovalResult,
   planFileFromUpdate,
+  planLinkUpdate,
   planText,
 } from "./plan-approval.mjs";
 
@@ -67,19 +68,6 @@ const pendingPlanApprovals = new Map();
 let nextQuestion = 0;
 // the plan file Claude last wrote, by session id
 const planFiles = new Map();
-
-/** Opens a file in this bb thread's side panel; best effort, never blocks the stream. */
-const openInPanel = (path) => {
-  if (!process.env.BB_THREAD_ID) return;
-  try {
-    const cli = process.env.BB_CLI || "bb";
-    const opener = spawn(cli, ["thread", "open", process.env.BB_THREAD_ID, path], { stdio: "ignore", detached: true });
-    opener.on("error", () => {});
-    opener.unref();
-  } catch {
-    // no bb CLI: the question still names the plan
-  }
-};
 
 /** The plan file to show for a plan approval request: Claude's own, else a copy of the plan text. */
 const planFileFor = async (msg) => {
@@ -153,7 +141,9 @@ const forward = async (line) => {
     const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
     pendingPlanApprovals.set(questionId, msg);
     const planFile = await planFileFor(msg);
-    if (planFile) openInPanel(planFile);
+    if (planFile && typeof msg.params?.sessionId === "string") {
+      process.stdout.write(JSON.stringify(planLinkUpdate(msg.params.sessionId, planFile)) + "\n");
+    }
     process.stdout.write(JSON.stringify(planApprovalQuestion(msg, questionId, planFile)) + "\n");
     return;
   }

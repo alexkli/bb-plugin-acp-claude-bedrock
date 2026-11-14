@@ -7,9 +7,10 @@
 // Full Access (it picks the first allow option), so the plan would never wait
 // for the user. The proxy holds that request and asks bb an elicitation
 // question instead, which bb always shows, then answers the adapter with the
-// option the user picked. The plan itself goes to bb's side panel as a
-// Markdown file (the proxy opens it with `bb thread open`), since a question
-// shows its text as one plain paragraph.
+// option the user picked. A question shows its text as one plain paragraph, so
+// the plan is not in it: the proxy adds a link to the plan file to Claude's
+// message, which bb opens in the side panel (bb thread open only opens files
+// inside the workspace, and plans are not).
 
 /** The adapter's option ids for this request all start with this (claude-agent-acp). */
 const EXIT_PLAN_OPTION_PREFIX = "exit-plan-";
@@ -70,16 +71,34 @@ export function planText(msg) {
   return typeof plan === "string" && plan.trim() !== "" ? plan.trim() : null;
 }
 
+/** The session/update that adds a link to the plan file to Claude's message. */
+export function planLinkUpdate(sessionId, planFile) {
+  const name = planFile.split(/[\\/]/).pop();
+  // a plain path, like other agents' file links; <...> only where a space needs it
+  const target = /\s/.test(planFile) ? `<${planFile}>` : planFile;
+  return {
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: `\n\n**Plan ready for review:** [${name}](${target})\n` },
+      },
+    },
+  };
+}
+
+const KEEP_PLANNING_HINT = " (then send your feedback)";
+
 /**
  * The elicitation/create request that asks the user about a plan approval
- * request. The question names the plan file (opened in the side panel) when
- * there is one; bb adds the field title "Ready to code?" after the message.
+ * request. bb adds the field title "Ready to code?" after the message. The
+ * adapter takes no text with the answer, so feedback on the plan is a normal
+ * message after "No, keep planning", which keeps Claude in plan mode.
  */
 export function planApprovalQuestion(msg, questionId, planFile = null) {
-  const name = planFile ? planFile.split(/[\\/]/).pop() : null;
-  const message = name
-    ? `Claude has finished planning. The plan is open in the side panel: ${name}`
-    : "Claude has finished planning. The plan is in the ExitPlanMode step above.";
+  const message = `Claude has finished planning. ${planFile ? "Open the plan from the link above." : "The plan is in the ExitPlanMode step above."} To change it, pick "No, keep planning" and send your feedback as a message.`;
   return {
     jsonrpc: "2.0",
     id: questionId,
@@ -94,7 +113,10 @@ export function planApprovalQuestion(msg, questionId, planFile = null) {
           decision: {
             type: "string",
             title: "Ready to code?",
-            oneOf: shownOptions(msg.params.options).map((o) => ({ const: o.optionId, title: o.name })),
+            oneOf: shownOptions(msg.params.options).map((o) => ({
+              const: o.optionId,
+              title: String(o.kind).startsWith("reject") ? `${o.name}${KEEP_PLANNING_HINT}` : o.name,
+            })),
           },
         },
         required: ["decision"],
