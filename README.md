@@ -16,6 +16,17 @@ Claude Code on **AWS Bedrock** as an agent in [bb](https://getbb.app), shown as
 The agent itself is a bb ACP custom agent. This plugin does not register a
 provider and uses only the public plugin SDK.
 
+## Screenshots
+
+**Claude Code (Bedrock)** in the model picker, with its estimated spend in the
+Provider usage panel (bottom left):
+
+![New thread with the Claude Code (Bedrock) provider selected and its model list open; the Provider usage panel shows this month and today against the budget](docs/overview.png)
+
+The plugin settings: monthly budget and price factor.
+
+![Claude Bedrock provider settings with Monthly budget and Price factor](docs/settings.png)
+
 ## Requirements
 
 - bb 0.49 or later, with the built-in ACP agents plugin (`provider-acp`).
