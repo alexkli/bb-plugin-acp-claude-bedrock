@@ -18,13 +18,14 @@
 //    Access, where it would answer the permission request itself (see
 //    plan-approval.mjs). Before asking, it opens the plan in the thread's side
 //    panel: a copy in the thread's storage folder (BB_THREAD_STORAGE), kept in
-//    sync with Claude's plan file so the panel follows later edits, added as a
-//    tab to the thread's side panel (without switching anyone's view to the
-//    thread); Claude's message gets a link to it as well.
+//    sync with Claude's plan file so the panel follows later edits. Claude's
+//    message gets a ::claude-bedrock-plan directive, which the plugin's app
+//    renders as a card that opens the copy in the side panel of a window
+//    showing the thread (never switching anyone's view).
 //    CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { watchFile } from "node:fs";
 import { appendFile, copyFile, mkdir, writeFile } from "node:fs/promises";
@@ -37,7 +38,6 @@ import {
   planApprovalResult,
   planFileFromUpdate,
   planLinkUpdate,
-  planTab,
   planText,
 } from "./plan-approval.mjs";
 
@@ -122,42 +122,6 @@ const planFileFor = async (msg) => {
   }
 };
 
-/** Runs the bb CLI; resolves with its stdout, or null on failure. */
-const bbCli = (args) =>
-  new Promise((resolve) => {
-    execFile(process.env.BB_CLI || "bb", args, { timeout: 15000, encoding: "utf8" }, (error, stdout) =>
-      resolve(error ? null : stdout),
-    );
-  });
-
-/**
- * Adds a thread-storage file as a tab to this thread's side panel, if it isn't
- * one already. Unlike `bb thread open`, this only changes the thread's saved
- * tabs: it doesn't switch anyone's window to the thread. Best effort.
- */
-const addPanelTab = async (path) => {
-  const threadId = process.env.BB_THREAD_ID;
-  if (!STORAGE || !threadId || !path.startsWith(STORAGE + sep)) return;
-  const tab = planTab(threadId, process.env.BB_ENVIRONMENT_ID || null, relative(STORAGE, path).split(sep).join("/"));
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const shown = await bbCli(["thread", "tabs", "show", threadId, "--json"]);
-    if (shown === null) return;
-    try {
-      const current = JSON.parse(shown);
-      if (current.tabs.some((t) => t.id === tab.id)) return;
-      const set = await bbCli([
-        "thread", "tabs", "set", threadId,
-        "--expected-revision", String(current.revision),
-        "--tabs-json", JSON.stringify([...current.tabs, tab]),
-        "--json",
-      ]);
-      if (set !== null) return; // else another client changed the tabs: retry
-    } catch {
-      return;
-    }
-  }
-};
-
 // bb -> agent: forwarded line by line, except bb's answers to plan approval questions
 const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
 fromBb.on("line", (line) => {
@@ -213,9 +177,10 @@ const forward = async (line) => {
     const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
     pendingPlanApprovals.set(questionId, msg);
     const planFile = await planFileFor(msg);
-    if (planFile) addPanelTab(planFile).catch(() => {});
     if (planFile && typeof msg.params?.sessionId === "string") {
-      process.stdout.write(JSON.stringify(planLinkUpdate(msg.params.sessionId, planFile)) + "\n");
+      const inStorage = STORAGE !== null && planFile.startsWith(STORAGE + sep);
+      const storagePath = inStorage ? relative(STORAGE, planFile).split(sep).join("/") : null;
+      process.stdout.write(JSON.stringify(planLinkUpdate(msg.params.sessionId, planFile, storagePath)) + "\n");
     }
     process.stdout.write(JSON.stringify(planApprovalQuestion(msg, questionId, planFile)) + "\n");
     return;

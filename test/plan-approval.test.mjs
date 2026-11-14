@@ -11,7 +11,6 @@ import {
   planApprovalResult,
   planFileFromUpdate,
   planLinkUpdate,
-  planTab,
   shownOptions,
 } from "../bin/plan-approval.mjs";
 
@@ -45,7 +44,7 @@ test("asks a short single-choice question that explains how to give feedback", (
   assert.equal(q.method, "elicitation/create");
   assert.equal(q.id, "q1");
   assert.equal(q.params.mode, "form");
-  assert.match(q.params.message, /^Claude has finished planning\. The plan is in a side panel tab \(and linked above\)\. /);
+  assert.match(q.params.message, /^Claude has finished planning\. The plan is in the side panel \(and above\)\. /);
   assert.match(q.params.message, /pick "No, keep planning" and send your feedback as a message\.$/);
   assert.doesNotMatch(q.params.message, /Ready to code/, "bb adds the field title; don't repeat it");
   const field = q.params.requestedSchema.properties.decision;
@@ -56,6 +55,13 @@ test("asks a short single-choice question that explains how to give feedback", (
   assert.match(planApprovalQuestion(REQUEST, "q2").params.message, /ExitPlanMode step/);
 });
 
+test("adds the plan card directive for a thread-storage plan", () => {
+  assert.deepEqual(planLinkUpdate("s1", "/st/plans/p.md", "plans/p.md").params.update.content, {
+    type: "text",
+    text: '\n\n::claude-bedrock-plan{file="plans/p.md"}\n',
+  });
+});
+
 test("links the plan file in Claude's message", () => {
   assert.deepEqual(planLinkUpdate("s1", "/h/.claude/plans/my plan.md").params, {
     sessionId: "s1",
@@ -63,18 +69,6 @@ test("links the plan file in Claude's message", () => {
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "\n\n**Plan ready for review:** [my plan.md](</h/.claude/plans/my plan.md>)\n" },
     },
-  });
-});
-
-test("builds the side-panel tab bb's app uses for a thread-storage file", () => {
-  assert.deepEqual(planTab("thr_1", "env_1", "plans/my plan.md"), {
-    environmentId: "env_1",
-    id: "thread-storage-file-preview:plans%2Fmy%20plan.md:thread%3Athr_1",
-    isPinned: false,
-    kind: "thread-storage-file-preview",
-    lineRange: null,
-    path: "plans/my plan.md",
-    threadId: "thr_1",
   });
 });
 
@@ -155,14 +149,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   });
   await done;
   // the tab is added in the background: wait for the fake bb's set call
-  if (storage) for (let i = 0; i < 50 && !(existsSync(calls) && readFileSync(calls, "utf8").includes("tabs set")); i++) await sleep(100);
   if (whileOpen) await whileOpen(storageDir);
   writeFileSync(release, "");
   await new Promise((r) => proxy.on("exit", r));
   return { dir, storageDir, received, calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : [] };
 }
 
-test("proxy: copies Claude's plan to thread storage, adds a panel tab, keeps the copy current, asks bb, answers the agent", async () => {
+test("proxy: copies Claude's plan to thread storage, keeps it current, adds the plan card, asks bb, answers the agent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "plan-approval-"));
   const source = join(dir, "home", ".claude", "plans", "p.md");
   mkdirSync(join(dir, "home", ".claude", "plans"), { recursive: true });
@@ -185,15 +178,10 @@ test("proxy: copies Claude's plan to thread storage, adds a panel tab, keeps the
   const copy = join(storageDir, "plans", "p.md");
   assert.equal(received.some((m) => m.method === "session/request_permission"), false, "permission request must not reach bb");
   assert.deepEqual(received.map((m) => m.method), ["session/update", "session/update", "elicitation/create", "test/received"], "order kept");
-  assert.equal(received[1].params.update.content.text, `\n\n**Plan ready for review:** [p.md](${copy})\n`);
-  assert.match(received[2].params.message, /side panel tab/);
-  assert.equal(calls.some((c) => c.startsWith("thread open")), false, "never switches anyone's view");
-  assert.equal(calls[0], "thread tabs show thr_test --json");
-  const set = calls.find((c) => c.startsWith("thread tabs set"));
-  assert.ok(set, "adds the tab");
-  assert.match(set, /^thread tabs set thr_test --expected-revision 7 --tabs-json /);
-  const tabs = JSON.parse(set.slice(set.indexOf("--tabs-json ") + 12, set.lastIndexOf(" --json")));
-  assert.deepEqual(tabs.map((t) => t.id), ["plugin-fixed:core:info", "thread-storage-file-preview:plans%2Fp.md:thread%3Athr_test"]);
+  assert.ok(existsSync(copy));
+  assert.equal(received[1].params.update.content.text, '\n\n::claude-bedrock-plan{file="plans/p.md"}\n');
+  assert.match(received[2].params.message, /side panel/);
+  assert.deepEqual(calls, [], "no bb CLI calls: nothing switches anyone's view");
   assert.deepEqual(received.at(-1).params, { jsonrpc: "2.0", id: 5, result: { outcome: { outcome: "selected", optionId: "exit-plan-default" } } });
 });
 
@@ -203,7 +191,7 @@ test("proxy: without a plan file, writes the plan text to thread storage", async
   assert.equal(plans.length, 1);
   const path = join(storageDir, "plans", plans[0]);
   assert.equal(readFileSync(path, "utf8"), "# Plan\n\n1. Do it\n");
-  assert.equal(received[0].params.update.content.text, `\n\n**Plan ready for review:** [${plans[0]}](${path})\n`);
+  assert.equal(received[0].params.update.content.text, `\n\n::claude-bedrock-plan{file="plans/${plans[0]}"}\n`);
   assert.equal(received[1].method, "elicitation/create");
 });
 

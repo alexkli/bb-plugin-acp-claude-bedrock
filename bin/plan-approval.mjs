@@ -71,24 +71,25 @@ export function planText(msg) {
 }
 
 /**
- * The side-panel tab for a file in a thread's storage folder (`path` relative
- * to it), with the id bb's app gives the same file, so a link to it focuses
- * this tab instead of opening a second one.
+ * The session/update that adds the plan to Claude's message: for a plan in the
+ * thread's storage folder (`storagePath`, relative to it), the
+ * `::claude-bedrock-plan` directive, which the plugin's app renders as a card
+ * that opens the plan in the side panel; otherwise a Markdown link to it.
  */
-export function planTab(threadId, environmentId, path) {
-  return {
-    environmentId,
-    id: ["thread-storage-file-preview", encodeURIComponent(path), encodeURIComponent(`thread:${threadId}`)].join(":"),
-    isPinned: false,
-    kind: "thread-storage-file-preview",
-    lineRange: null,
-    path,
-    threadId,
-  };
-}
-
-/** The session/update that adds a link to the plan file to Claude's message. */
-export function planLinkUpdate(sessionId, planFile) {
+export function planLinkUpdate(sessionId, planFile, storagePath = null) {
+  if (storagePath !== null) {
+    return {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `\n\n::claude-bedrock-plan{file="${storagePath.replace(/"/g, "")}"}\n` },
+        },
+      },
+    };
+  }
   const name = planFile.split(/[\\/]/).pop();
   // a plain path, like other agents' file links; <...> only where a space needs it
   const target = /\s/.test(planFile) ? `<${planFile}>` : planFile;
@@ -114,7 +115,7 @@ const KEEP_PLANNING_HINT = " (then send your feedback)";
  * message after "No, keep planning", which keeps Claude in plan mode.
  */
 export function planApprovalQuestion(msg, questionId, planFile = null) {
-  const message = `Claude has finished planning. ${planFile ? "The plan is in a side panel tab (and linked above)." : "The plan is in the ExitPlanMode step above."} To change it, pick "No, keep planning" and send your feedback as a message.`;
+  const message = `Claude has finished planning. ${planFile ? "The plan is in the side panel (and above)." : "The plan is in the ExitPlanMode step above."} To change it, pick "No, keep planning" and send your feedback as a message.`;
   return {
     jsonrpc: "2.0",
     id: questionId,

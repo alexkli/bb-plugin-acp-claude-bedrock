@@ -107,11 +107,15 @@ and Claude would go straight to implementing. The proxy holds that request
 and instead:
 
 - copies the plan into the thread's storage folder (`plans/<name>.md`) and
-  adds it as a tab to the thread's side panel. The copy follows Claude's plan
-  file (`~/.claude/plans/<name>.md`), so when you ask for changes the open tab
-  updates by itself. Adding the tab doesn't switch your window to the thread;
-  you see it when you open the thread. Claude's message also gets a "Plan
-  ready for review" link to it;
+  keeps the copy in sync with Claude's plan file
+  (`~/.claude/plans/<name>.md`), so an open plan updates by itself when you
+  ask for changes;
+- adds a "Plan ready for review" card to Claude's message
+  (`::claude-bedrock-plan{file="plans/<name>.md"}`, rendered by this plugin's
+  app). The first time a bb window shows the card, it opens the plan in that
+  window's side panel; windows on other threads are left alone, and coming
+  back to the thread later doesn't open it again. "Open plan" on the card
+  opens it any time;
 - asks you a question, which bb shows in every permission mode, with
   Claude's options, such as "Yes, and use auto mode", "Yes, manually approve
   edits" and "No, keep planning" (at most four; bb can't show more).
