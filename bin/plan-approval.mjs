@@ -7,7 +7,9 @@
 // Full Access (it picks the first allow option), so the plan would never wait
 // for the user. The proxy holds that request and asks bb an elicitation
 // question instead, which bb always shows, then answers the adapter with the
-// option the user picked.
+// option the user picked. The plan itself goes to bb's side panel as a
+// Markdown file (the proxy opens it with `bb thread open`), since a question
+// shows its text as one plain paragraph.
 
 /** The adapter's option ids for this request all start with this (claude-agent-acp). */
 const EXIT_PLAN_OPTION_PREFIX = "exit-plan-";
@@ -15,8 +17,8 @@ const EXIT_PLAN_OPTION_PREFIX = "exit-plan-";
 const MAX_OPTIONS = 4;
 /** Options to leave out first when there are more than bb can show. */
 const DROP_ORDER = ["exit-plan-bypass", "exit-plan-clear-bypass", "exit-plan-clear-accept-edits", "exit-plan-clear-auto"];
-/** Longest plan text shown in the question; the full plan is in the thread. */
-const MAX_PLAN_CHARS = 6000;
+/** Claude Code writes plans to <plansDirectory>/<slug>.md (default ~/.claude/plans). */
+const PLAN_FILE = /[\\/]plans[\\/][^\\/]+\.md$/;
 
 /** Whether an agent -> client message is the permission request that ends plan mode. */
 export function isPlanApprovalRequest(msg) {
@@ -45,16 +47,39 @@ export function shownOptions(options) {
   return shown;
 }
 
-/** The elicitation/create request that asks the user about a plan approval request. */
-export function planApprovalQuestion(msg, questionId) {
+/**
+ * The plan file a session/update reports Claude writing, as [sessionId, path],
+ * or null: a tool call whose location or file_path is a .md file in a plans
+ * directory.
+ */
+export function planFileFromUpdate(msg) {
+  if (msg?.method !== "session/update") return null;
+  const update = msg.params?.update;
+  if (update?.sessionUpdate !== "tool_call" && update?.sessionUpdate !== "tool_call_update") return null;
+  const paths = [
+    ...(Array.isArray(update.locations) ? update.locations.map((l) => l?.path) : []),
+    update.rawInput?.file_path,
+  ];
+  const path = paths.find((p) => typeof p === "string" && PLAN_FILE.test(p));
+  return path && typeof msg.params.sessionId === "string" ? [msg.params.sessionId, path] : null;
+}
+
+/** The plan text of a plan approval request, or null. */
+export function planText(msg) {
   const plan = msg.params?.toolCall?.rawInput?.plan;
-  const planText =
-    typeof plan === "string" && plan.trim() !== ""
-      ? plan.trim().length > MAX_PLAN_CHARS
-        ? `${plan.trim().slice(0, MAX_PLAN_CHARS)}\n\n[… plan truncated; the full plan is in the thread]`
-        : plan.trim()
-      : null;
-  const message = planText === null ? "Claude has finished planning. Ready to code?" : `${planText}\n\nReady to code?`;
+  return typeof plan === "string" && plan.trim() !== "" ? plan.trim() : null;
+}
+
+/**
+ * The elicitation/create request that asks the user about a plan approval
+ * request. The question names the plan file (opened in the side panel) when
+ * there is one; bb adds the field title "Ready to code?" after the message.
+ */
+export function planApprovalQuestion(msg, questionId, planFile = null) {
+  const name = planFile ? planFile.split(/[\\/]/).pop() : null;
+  const message = name
+    ? `Claude has finished planning. The plan is open in the side panel: ${name}`
+    : "Claude has finished planning. The plan is in the ExitPlanMode step above.";
   return {
     jsonrpc: "2.0",
     id: questionId,

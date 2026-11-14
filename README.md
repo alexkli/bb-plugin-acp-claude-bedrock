@@ -104,9 +104,15 @@ In plan mode, Claude ends planning with "Ready to code?", which the ACP
 adapter sends to bb as a permission request. In Full Access, bb answers every
 permission request itself, so the plan would be approved without asking you
 and Claude would go straight to implementing. The proxy holds that request
-and asks bb a question instead, which bb shows in every permission mode: the
-plan and Claude's options, such as "Yes, and use auto mode", "Yes, manually
-approve edits" and "No, keep planning" (at most four; bb can't show more).
+and instead:
+
+- opens the plan in the thread's side panel as a Markdown file
+  (`bb thread open`): the file Claude wrote under `~/.claude/plans/`, or a
+  copy of the plan text in `~/.local/state/claude-bedrock/plans/`;
+- asks you a question, which bb shows in every permission mode, with
+  Claude's options, such as "Yes, and use auto mode", "Yes, manually approve
+  edits" and "No, keep planning" (at most four; bb can't show more).
+
 Your answer goes back to Claude as the permission decision; dismissing the
 question keeps Claude in plan mode. Set `CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0` in
 the agent's `env` to leave the request to bb instead.

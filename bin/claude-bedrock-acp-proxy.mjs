@@ -16,16 +16,23 @@
 // 4. Holds the permission request that ends plan mode ("Ready to code?") and
 //    asks bb an elicitation question instead, which bb shows even in Full
 //    Access, where it would answer the permission request itself (see
-//    plan-approval.mjs). CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
+//    plan-approval.mjs), and opens the plan file in the thread's side panel
+//    with `bb thread open`. CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { isPlanApprovalRequest, planApprovalQuestion, planApprovalResult } from "./plan-approval.mjs";
+import {
+  isPlanApprovalRequest,
+  planApprovalQuestion,
+  planApprovalResult,
+  planFileFromUpdate,
+  planText,
+} from "./plan-approval.mjs";
 
 const PRICE_FACTOR = Number(process.env.CLAUDE_BEDROCK_PRICE_FACTOR ?? "1") || 1;
 const ASK_PLAN_APPROVAL = process.env.CLAUDE_BEDROCK_ASK_PLAN_APPROVAL !== "0";
@@ -58,6 +65,38 @@ child.stdin.on("error", () => {});
 // plan approval questions sent to bb, by question id: the held permission request
 const pendingPlanApprovals = new Map();
 let nextQuestion = 0;
+// the plan file Claude last wrote, by session id
+const planFiles = new Map();
+
+/** Opens a file in this bb thread's side panel; best effort, never blocks the stream. */
+const openInPanel = (path) => {
+  if (!process.env.BB_THREAD_ID) return;
+  try {
+    const cli = process.env.BB_CLI || "bb";
+    const opener = spawn(cli, ["thread", "open", process.env.BB_THREAD_ID, path], { stdio: "ignore", detached: true });
+    opener.on("error", () => {});
+    opener.unref();
+  } catch {
+    // no bb CLI: the question still names the plan
+  }
+};
+
+/** The plan file to show for a plan approval request: Claude's own, else a copy of the plan text. */
+const planFileFor = async (msg) => {
+  const own = planFiles.get(msg.params?.sessionId);
+  if (own) return own;
+  const text = planText(msg);
+  if (text === null) return null;
+  try {
+    const dir = join(LEDGER_DIR, "plans");
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, `${String(msg.params?.sessionId ?? RUN).replace(/[^\w.-]/g, "_")}-${Date.now()}.md`);
+    await writeFile(path, text + "\n");
+    return path;
+  } catch {
+    return null;
+  }
+};
 
 // bb -> agent: forwarded line by line, except bb's answers to plan approval questions
 const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -100,21 +139,33 @@ const rewrite = (msg) => {
 };
 
 const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-rl.on("line", (line) => {
-  let out = line;
+
+/** Forwards one agent -> bb line, rewritten; resolves once it (or what replaces it) is written. */
+const forward = async (line) => {
+  let msg;
   try {
-    const msg = JSON.parse(line);
-    if (ASK_PLAN_APPROVAL && isPlanApprovalRequest(msg)) {
-      const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
-      pendingPlanApprovals.set(questionId, msg);
-      process.stdout.write(JSON.stringify(planApprovalQuestion(msg, questionId)) + "\n");
-      return;
-    }
-    out = JSON.stringify(rewrite(msg));
+    msg = JSON.parse(line);
   } catch {
-    // not JSON: pass through untouched
+    process.stdout.write(line + "\n"); // not JSON: pass through untouched
+    return;
   }
-  process.stdout.write(out + "\n");
+  if (ASK_PLAN_APPROVAL && isPlanApprovalRequest(msg)) {
+    const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
+    pendingPlanApprovals.set(questionId, msg);
+    const planFile = await planFileFor(msg);
+    if (planFile) openInPanel(planFile);
+    process.stdout.write(JSON.stringify(planApprovalQuestion(msg, questionId, planFile)) + "\n");
+    return;
+  }
+  const planFile = planFileFromUpdate(msg);
+  if (planFile) planFiles.set(planFile[0], planFile[1]);
+  process.stdout.write(JSON.stringify(rewrite(msg)) + "\n");
+};
+
+// lines go out in order, even while a plan file is being prepared
+let forwarding = Promise.resolve();
+rl.on("line", (line) => {
+  forwarding = forwarding.then(() => forward(line)).catch(() => process.stdout.write(line + "\n"));
 });
 
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
@@ -128,5 +179,5 @@ const maybeExit = () => {
     ledger.finally(() => process.stdout.write("", () => process.exit(exitCode)));
   }
 };
-rl.on("close", () => { drained = true; maybeExit(); });
+rl.on("close", () => forwarding.finally(() => { drained = true; maybeExit(); }));
 child.on("exit", (code, signal) => { exitCode = code ?? (signal ? 1 : 0); maybeExit(); });
