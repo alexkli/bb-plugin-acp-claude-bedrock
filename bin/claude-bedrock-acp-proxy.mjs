@@ -13,6 +13,10 @@
 //    ~/.local/state/claude-bedrock/cost.jsonl; one JSON object per line:
 //    t = epoch ms, src, key = one session in one process, usd = cumulative
 //    list-price USD). The plugin's usage entry sums it.
+// 4. Holds the permission request that ends plan mode ("Ready to code?") and
+//    asks bb an elicitation question instead, which bb shows even in Full
+//    Access, where it would answer the permission request itself (see
+//    plan-approval.mjs). CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
 import { spawn } from "node:child_process";
@@ -21,8 +25,10 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { isPlanApprovalRequest, planApprovalQuestion, planApprovalResult } from "./plan-approval.mjs";
 
 const PRICE_FACTOR = Number(process.env.CLAUDE_BEDROCK_PRICE_FACTOR ?? "1") || 1;
+const ASK_PLAN_APPROVAL = process.env.CLAUDE_BEDROCK_ASK_PLAN_APPROVAL !== "0";
 const HIDDEN_OPTIONS = new Set(
   (process.env.CLAUDE_BEDROCK_ACP_HIDE_OPTIONS ?? "agent").split(",").filter(Boolean),
 );
@@ -47,8 +53,32 @@ const record = (sessionId, usd) => {
 const [cmd, ...args] = process.argv.slice(2);
 const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "inherit"] });
 
-process.stdin.pipe(child.stdin);
 child.stdin.on("error", () => {});
+
+// plan approval questions sent to bb, by question id: the held permission request
+const pendingPlanApprovals = new Map();
+let nextQuestion = 0;
+
+// bb -> agent: forwarded line by line, except bb's answers to plan approval questions
+const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
+fromBb.on("line", (line) => {
+  if (pendingPlanApprovals.size > 0 && line.includes("bb-plan-approval-")) {
+    try {
+      const msg = JSON.parse(line);
+      const held = msg.method === undefined ? pendingPlanApprovals.get(msg.id) : undefined;
+      if (held) {
+        pendingPlanApprovals.delete(msg.id);
+        const answer = { jsonrpc: "2.0", id: held.id, result: planApprovalResult(msg, held.params.options) };
+        child.stdin.write(JSON.stringify(answer) + "\n");
+        return;
+      }
+    } catch {
+      // not ours: forward
+    }
+  }
+  child.stdin.write(line + "\n");
+});
+fromBb.on("close", () => child.stdin.end());
 
 const filterOptions = (obj) => {
   if (obj && Array.isArray(obj.configOptions)) {
@@ -73,7 +103,14 @@ const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
 rl.on("line", (line) => {
   let out = line;
   try {
-    out = JSON.stringify(rewrite(JSON.parse(line)));
+    const msg = JSON.parse(line);
+    if (ASK_PLAN_APPROVAL && isPlanApprovalRequest(msg)) {
+      const questionId = `bb-plan-approval-${RUN}-${nextQuestion++}`;
+      pendingPlanApprovals.set(questionId, msg);
+      process.stdout.write(JSON.stringify(planApprovalQuestion(msg, questionId)) + "\n");
+      return;
+    }
+    out = JSON.stringify(rewrite(msg));
   } catch {
     // not JSON: pass through untouched
   }

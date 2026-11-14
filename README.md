@@ -8,7 +8,8 @@ as **Claude Code (Bedrock ACP)** in the provider picker. It has these parts:
   [`@agentclientprotocol/claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp).
 - `bin/claude-bedrock-acp-proxy.mjs`: a small ACP proxy started by the
   launcher. It applies the price factor to the cost bb shows, hides the
-  subagent picker option and records spend in a local ledger.
+  subagent picker option, records spend in a local ledger, and makes plan mode
+  ask before it implements (see [Plan mode](#plan-mode)).
 - The bb plugin. It registers the launcher as the custom agent `claude-bedrock`
   (provider `acp-claude-bedrock`) in bb's ACP agents plugin and keeps that entry
   up to date, passes the plugin settings to the agent, gives the provider the
@@ -97,6 +98,19 @@ options to hide). Other Claude Code variables, such as `ANTHROPIC_MODEL`, pass
 through as well. Each launch appends one line (time, region, credential source,
 adapter; never the key) to `~/.local/state/claude-bedrock/launcher.log`.
 
+## Plan mode
+
+In plan mode, Claude ends planning with "Ready to code?", which the ACP
+adapter sends to bb as a permission request. In Full Access, bb answers every
+permission request itself, so the plan would be approved without asking you
+and Claude would go straight to implementing. The proxy holds that request
+and asks bb a question instead, which bb shows in every permission mode: the
+plan and Claude's options, such as "Yes, and use auto mode", "Yes, manually
+approve edits" and "No, keep planning" (at most four; bb can't show more).
+Your answer goes back to Claude as the permission decision; dismissing the
+question keeps Claude in plan mode. Set `CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0` in
+the agent's `env` to leave the request to bb instead.
+
 ## Usage entry
 
 The plugin adds estimated spend for `acp-claude-bedrock` to bb's Provider usage
@@ -132,7 +146,8 @@ unavailable" card for it.
 ## Development
 
 `bb plugin build` compiles the plugin into `dist/`, and
-`bb plugin reload acp-claude-bedrock` reloads it. `npx tsc -p .` type-checks it.
+`bb plugin reload acp-claude-bedrock` reloads it. `npx tsc -p .` type-checks it,
+and `npm test` runs the proxy's tests.
 
 ## License
 

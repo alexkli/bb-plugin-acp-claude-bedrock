@@ -42,5 +42,8 @@
   },
   "dependencies": {
     "zod": "^4.6.7"
+  },
+  "scripts": {
+    "test": "node --test test/"
   }
 }
