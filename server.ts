@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -5,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { parseLedger, totals } from "./ledger";
+import { accountId, forAccount, parseLedger, totals } from "./ledger";
 import { provisionAgent } from "./agent-entry";
 
 // Claude Code on AWS Bedrock as a bb ACP agent:
@@ -61,6 +62,19 @@ export const usageRpcContract = defineRpcContract({
 const cents = (usd: number) => Math.round(usd * 100);
 const usd = (amount: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+
+/** The Bedrock API key from the macOS keychain item the launcher also reads, if any. */
+function keychainToken(): Promise<string | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(
+      "/usr/bin/security",
+      ["find-generic-password", "-a", process.env.USER ?? "", "-s", "claude-bedrock-token", "-w"],
+      { timeout: 5000, encoding: "utf8" },
+      (error, stdout) => resolve(error ? null : stdout.trim() || null),
+    );
+  });
+}
 
 /** This plugin's root: the nearest folder up from the bundle with our package.json. */
 function findPluginDir(): string {
@@ -195,8 +209,11 @@ export default function plugin(bb: BbPluginApi) {
       const discount = factor > 0 ? factor : 1;
       const budget = monthlyBudgetUsd > 0 ? monthlyBudgetUsd : 100;
       const now = new Date();
-      // this provider's threads (src "bb", or no src in older lines) and terminal sessions ("cli")
-      const t = totals(parseLedger(text).filter((e) => e.src === undefined || e.src === "bb" || e.src === "cli"), now);
+      // all spend with the credential the agent uses, as the launcher picks it:
+      // the API key setting, else the keychain, else the AWS profile or chain
+      const creds = await settings.get();
+      const apiKey = creds.apiKey?.trim() || (await keychainToken());
+      const t = totals(forAccount(parseLedger(text), accountId(apiKey, creds.awsProfile)), now);
       const month = t.month * discount;
       const today = t.today * discount;
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();

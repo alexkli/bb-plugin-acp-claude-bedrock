@@ -16,6 +16,7 @@
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -28,10 +29,18 @@ const HIDDEN_OPTIONS = new Set(
 
 const LEDGER_DIR = join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "claude-bedrock");
 const RUN = `${process.pid}-${Date.now()}`;
+// the Bedrock credential, as the ledger names it (same as accountId in ledger.ts)
+const ACCT = (() => {
+  const key = process.env.AWS_BEARER_TOKEN_BEDROCK?.trim();
+  if (key) return `key:${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
+  const profile = process.env.AWS_PROFILE?.trim();
+  return profile ? `profile:${profile}` : "aws-chain";
+})();
+
 // serialised appends; ledger failures must never disturb the ACP stream
 let ledger = mkdir(LEDGER_DIR, { recursive: true }).catch(() => {});
 const record = (sessionId, usd) => {
-  const line = JSON.stringify({ t: Date.now(), src: "bb", key: `bb:${RUN}:${sessionId}`, usd }) + "\n";
+  const line = JSON.stringify({ t: Date.now(), src: "bb", acct: ACCT, key: `bb:${RUN}:${sessionId}`, usd }) + "\n";
   ledger = ledger.then(() => appendFile(join(LEDGER_DIR, "cost.jsonl"), line)).catch(() => {});
 };
 

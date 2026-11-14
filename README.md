@@ -113,10 +113,15 @@ The data comes from a local ledger,
 `${XDG_STATE_HOME:-~/.local/state}/claude-bedrock/cost.jsonl`, of Claude Code's
 own running list-price cost estimates. The proxy appends one line whenever a
 bb thread's cost changes (src `bb`). Other tools can append terminal sessions
-in the same format: `{"t": <epoch ms>, "src": "cli", "key": "<unique session id>", "usd": <running list-price USD>}`.
+in the same format: `{"t": <epoch ms>, "src": "cli", "acct": "<credential, see below>", "key": "<unique session id>", "usd": <running list-price USD>}`.
 The Claude Bedrock provider plugin writes to the same ledger (src
-`bb-claude-code`) for its own usage entry; this entry counts `bb` and `cli`
-lines only. Only spend recorded in the ledger is counted. This is an estimate, not your
+`bb-claude-code`). Each line also names the Bedrock credential it was spent
+with (`acct`): `key:` and 12 hex characters of the API key's SHA-256 (never the
+key), `profile:<name>`, or `aws-chain`. The entry counts all lines for the
+credential this plugin uses (API key setting, else keychain, else AWS
+profile), whatever wrote them, so the budget covers everything spent with that
+key on this machine; lines without `acct` count for every credential. Only
+spend recorded in the ledger is counted. This is an estimate, not your
 AWS bill.
 
 bb lists the entry under the raw provider id, because ACP custom agents don't
