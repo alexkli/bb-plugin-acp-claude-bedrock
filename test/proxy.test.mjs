@@ -101,6 +101,7 @@ test("proxy: Accept Edits runs Bash in the sandbox, and bb's argument never reac
     network: { allowLocalBinding: true },
     filesystem: { allowWrite: ["/storage"] },
   });
+  assert.equal(received.find((m) => m.params?.method === "session/new").params.params._meta.claudeCode.options.promptSuggestions, false);
   const prompt = received.find((m) => m.params?.method === "session/prompt").params;
   assert.deepEqual(prompt, PROMPT, "other requests pass unchanged");
 });
@@ -109,7 +110,8 @@ test("proxy: Full Access, an unknown mode and the opt-out get no sandbox", async
   for (const [args, env] of [[["--bb-permission-mode=full"], {}], [[], {}], [["--bb-permission-mode=accept-edits"], { CLAUDE_BEDROCK_SANDBOX: "0" }]]) {
     const { received } = await runProxy(args, { env });
     assert.equal(sandboxOf(received), undefined, JSON.stringify({ args, env }));
-    assert.deepEqual(received.find((m) => m.params?.method === "session/new").params, SESSION_NEW);
+    const forwarded = received.find((m) => m.params?.method === "session/new").params;
+    assert.deepEqual(forwarded, { ...SESSION_NEW, params: { ...SESSION_NEW.params, _meta: { claudeCode: { options: { promptSuggestions: false } } } } }, "only prompt suggestions turned off");
   }
 });
 

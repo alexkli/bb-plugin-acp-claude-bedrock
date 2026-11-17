@@ -33,6 +33,9 @@
 //    permissionCli); the proxy takes that argument off the adapter's command
 //    line. Full Access, or an unknown mode, gets no sandbox.
 //    CLAUDE_BEDROCK_SANDBOX=0 turns this off.
+// 6. Turns Claude Code's prompt suggestions off on every session start
+//    (SESSION_OPTIONS in acp-session.mjs): bb never shows them, and each one
+//    costs a model request with the whole conversation as input, per turn.
 //
 // Usage: claude-bedrock-acp-proxy.mjs <command> [args...] [--bb-permission-mode=<mode>]
 import { spawn } from "node:child_process";
@@ -50,7 +53,7 @@ import {
   planLinkUpdate,
   planText,
 } from "./plan-approval.mjs";
-import { sandboxFor, takePermissionMode, withSandbox } from "./acp-session.mjs";
+import { sandboxFor, takePermissionMode, withSessionOptions } from "./acp-session.mjs";
 
 const PRICE_FACTOR = Number(process.env.CLAUDE_BEDROCK_PRICE_FACTOR ?? "1") || 1;
 const ASK_PLAN_APPROVAL = process.env.CLAUDE_BEDROCK_ASK_PLAN_APPROVAL !== "0";
@@ -137,9 +140,9 @@ const planFileFor = async (msg) => {
 
 /** One bb -> agent line, with the sandbox added to a session start. */
 const toAgent = (line) => {
-  if (SANDBOX === null || !line.includes('"session/')) return line;
+  if (!line.includes('"session/')) return line;
   try {
-    return JSON.stringify(withSandbox(JSON.parse(line), SANDBOX));
+    return JSON.stringify(withSessionOptions(JSON.parse(line), { sandbox: SANDBOX }));
   } catch {
     return line; // not JSON: pass through untouched
   }
