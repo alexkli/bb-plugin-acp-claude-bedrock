@@ -37,14 +37,17 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "better-sqlite3": "^12.11.1",
+    "cron-parser": "5.10.6",
     "hono": "^4.13.18",
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.106.0",
-    "zod": "^4.6.7"
+    "@agentclientprotocol/claude-agent-acp": "0.106.0",
+    "zod": "4.6.7"
   },
   "scripts": {
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit -p .",
     "test": "node --test test/"
   }
 }

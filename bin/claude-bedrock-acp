@@ -21,7 +21,11 @@
 #                             on PATH, else npx -y @agentclientprotocol/claude-agent-acp).
 #   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
 #                             on PATH, else the adapter's bundled one).
-#   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS: see the proxy.
+#   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS,
+#   CLAUDE_BEDROCK_SANDBOX: see the proxy.
+#
+# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the agent entry's
+# permissionCli); they go to the proxy, which takes that one off.
 set -euo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

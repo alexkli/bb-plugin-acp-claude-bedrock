@@ -24,7 +24,17 @@
 //    showing the thread (never switching anyone's view).
 //    CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 turns this off.
 //
-// Usage: claude-bedrock-acp-proxy.mjs <command> [args...]
+// In bb -> agent messages it:
+//
+// 5. Runs Bash in Claude Code's sandbox in bb's Accept Edits mode, as bb's own
+//    Claude Code provider does (acp-session.mjs): it adds the sandbox to the
+//    options of session/new, load, resume and fork. bb passes its permission
+//    mode as --bb-permission-mode=<full|accept-edits> (the agent entry's
+//    permissionCli); the proxy takes that argument off the adapter's command
+//    line. Full Access, or an unknown mode, gets no sandbox.
+//    CLAUDE_BEDROCK_SANDBOX=0 turns this off.
+//
+// Usage: claude-bedrock-acp-proxy.mjs <command> [args...] [--bb-permission-mode=<mode>]
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { watchFile } from "node:fs";
@@ -40,6 +50,7 @@ import {
   planLinkUpdate,
   planText,
 } from "./plan-approval.mjs";
+import { sandboxFor, takePermissionMode, withSandbox } from "./acp-session.mjs";
 
 const PRICE_FACTOR = Number(process.env.CLAUDE_BEDROCK_PRICE_FACTOR ?? "1") || 1;
 const ASK_PLAN_APPROVAL = process.env.CLAUDE_BEDROCK_ASK_PLAN_APPROVAL !== "0";
@@ -64,7 +75,9 @@ const record = (sessionId, usd) => {
   ledger = ledger.then(() => appendFile(join(LEDGER_DIR, "cost.jsonl"), line)).catch(() => {});
 };
 
-const [cmd, ...args] = process.argv.slice(2);
+const { permissionMode, rest: command } = takePermissionMode(process.argv.slice(2));
+const SANDBOX = sandboxFor({ permissionMode, enabled: process.env.CLAUDE_BEDROCK_SANDBOX !== "0" });
+const [cmd, ...args] = command;
 const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "inherit"] });
 
 child.stdin.on("error", () => {});
@@ -122,6 +135,16 @@ const planFileFor = async (msg) => {
   }
 };
 
+/** One bb -> agent line, with the sandbox added to a session start. */
+const toAgent = (line) => {
+  if (SANDBOX === null || !line.includes('"session/')) return line;
+  try {
+    return JSON.stringify(withSandbox(JSON.parse(line), SANDBOX));
+  } catch {
+    return line; // not JSON: pass through untouched
+  }
+};
+
 // bb -> agent: forwarded line by line, except bb's answers to plan approval questions
 const fromBb = createInterface({ input: process.stdin, crlfDelay: Infinity });
 fromBb.on("line", (line) => {
@@ -139,7 +162,7 @@ fromBb.on("line", (line) => {
       // not ours: forward
     }
   }
-  child.stdin.write(line + "\n");
+  child.stdin.write(toAgent(line) + "\n");
 });
 fromBb.on("close", () => child.stdin.end());
 

@@ -1,23 +1,38 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { accountId, forAccount, parseLedger, totals } from "./ledger";
-import { provisionAgent } from "./agent-entry";
+import { accountId, forAccount, parseLedger, totals } from "./ledger.ts";
+import {
+  type CustomAgent,
+  type ManagedEnv,
+  AGENT_ID,
+  DISPLAY_NAME,
+  managedAgent,
+  provisionAgent,
+  readCurrentEntry,
+  unregisterAgent,
+} from "./agent-entry.ts";
 
 // Claude Code on AWS Bedrock as a bb ACP agent:
 // - registers the agent (id "claude-bedrock", provider "acp-claude-bedrock") in
 //   bb's ACP agents plugin, pointing at this plugin's own bin/claude-bedrock-acp,
-//   on every load (the install folder changes with each plugin update);
+//   from a background service on every load and on settings changes (the install
+//   folder changes with each plugin update); when that fails, bb shows the plugin
+//   as needing configuration;
+// - adds `bb acp-claude-bedrock status | repair | unregister`;
 // - passes region, price factor and the other settings to that agent through
 //   the entry's env; the API key (a secret setting) goes to a 0600 file whose
 //   path the launcher gets, so it never lands in the ACP agents config;
 // - publishes estimated spend for bb's Provider usage panel/footer through the
-//   provider-usage RPC methods below.
+//   provider-usage RPC methods below;
+// - declares bb's permission modes (permissionCli) and manual compaction in the
+//   entry, so Accept Edits runs Bash in Claude Code's sandbox (see
+//   bin/acp-session.mjs) and /compact shows in the composer.
 const PROVIDER_ID = "acp-claude-bedrock";
 const PACKAGE_NAME = "bb-plugin-acp-claude-bedrock";
 const LIST_RESOURCES = "provider-usage.v1.listResources";
@@ -62,6 +77,52 @@ export const usageRpcContract = defineRpcContract({
 const cents = (usd: number) => Math.round(usd * 100);
 const usd = (amount: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+
+const ADAPTER = join("node_modules", "@agentclientprotocol", "claude-agent-acp");
+
+type Settings = {
+  apiKey?: string;
+  region: string;
+  awsProfile?: string;
+  adapterCommand?: string;
+  sandbox: boolean;
+  priceFactor: number;
+};
+
+/** The entry's env for these settings; keyFile is the API key file's path when there is a key. */
+export function managedEnvFor(s: Settings, keyFile: string | undefined): ManagedEnv {
+  return {
+    AWS_REGION: s.region.trim() || "us-east-1",
+    AWS_PROFILE: s.awsProfile?.trim(),
+    CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
+    CLAUDE_BEDROCK_PRICE_FACTOR: String(s.priceFactor > 0 ? s.priceFactor : 1),
+    CLAUDE_BEDROCK_KEY_FILE: keyFile,
+    // only the opt-out is set, so the default leaves the entry unchanged
+    CLAUDE_BEDROCK_SANDBOX: s.sandbox === false ? "0" : undefined,
+  };
+}
+
+const isExecutable = (path: string) => {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** The bundled adapter's version, or null when it isn't installed. */
+function bundledAdapterVersion(pluginDir: string): string | null {
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(pluginDir, ADAPTER, "package.json"), "utf8"));
+    const version = (manifest as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+type CliResult = { exitCode: number; stdout?: string; stderr?: string };
 
 /** The Bedrock API key from the macOS keychain item the launcher also reads, if any. */
 function keychainToken(): Promise<string | null> {
@@ -113,6 +174,13 @@ export default function plugin(bb: BbPluginApi) {
       description:
         "Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: the adapter bundled with the plugin.",
     },
+    sandbox: {
+      type: "boolean",
+      label: "Bash sandbox in Accept Edits",
+      description:
+        "Run Claude Code's Bash commands in its OS sandbox when a thread uses Accept Edits, as bb's Claude Code provider does: writes stay inside the workspace, and Claude asks before running a command outside the sandbox. Full Access never uses the sandbox. A change applies when a thread's agent next starts.",
+      default: true,
+    },
     monthlyBudgetUsd: {
       type: "number",
       label: "Monthly budget (USD)",
@@ -127,7 +195,8 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
-  const launcher = join(findPluginDir(), "bin", "claude-bedrock-acp");
+  const pluginDir = findPluginDir();
+  const launcher = join(pluginDir, "bin", "claude-bedrock-acp");
 
   // The API key is a secret setting (bb keeps it out of its db and the
   // frontend). bb's ACP agents plugin only passes an agent's configured env to
@@ -157,26 +226,124 @@ export default function plugin(bb: BbPluginApi) {
     return path;
   }
 
-  let syncing = Promise.resolve();
+  /** Writes the key file and adds or updates the agent entry; true when the entry changed. */
+  async function provision(): Promise<boolean> {
+    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
+    const s = await settings.get();
+    const keyFile = await syncKeyFile(s.apiKey);
+    return provisionAgent(bb, launcher, managedEnvFor(s, keyFile));
+  }
+
+  // one provisioning at a time; a failure marks the plugin as needing configuration
+  let provisioning: Promise<unknown> = Promise.resolve();
   const sync = () => {
-    syncing = syncing
-      .then(async () => {
-        const s = await settings.get();
-        const keyFile = await syncKeyFile(s.apiKey);
-        await provisionAgent(bb, launcher, {
-          AWS_REGION: s.region.trim() || "us-east-1",
-          AWS_PROFILE: s.awsProfile?.trim(),
-          CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
-          CLAUDE_BEDROCK_PRICE_FACTOR: String(s.priceFactor > 0 ? s.priceFactor : 1),
-          CLAUDE_BEDROCK_KEY_FILE: keyFile,
-        });
-      })
-      .catch((error: unknown) => {
-        bb.log.error(`Could not update the Claude Code (Bedrock ACP) agent: ${String(error)}`);
-      });
+    const run = provisioning.then(provision);
+    provisioning = run.catch((error: unknown) => {
+      const message = `Could not register the ${DISPLAY_NAME} agent: ${error instanceof Error ? error.message : String(error)}`;
+      bb.log.error(message);
+      bb.status.needsConfiguration(`${message}. Fix it, then run: bb acp-claude-bedrock repair`);
+    });
+    return run;
   };
-  sync();
-  settings.onChange(() => sync());
+
+  // after the factory, so a slow ACP agents plugin doesn't hold up loading
+  bb.background.service("provision", {
+    async start() {
+      await sync().catch(() => {});
+    },
+  });
+  settings.onChange(() => {
+    void sync().catch(() => {});
+  });
+
+  async function status(): Promise<CliResult> {
+    const s = await settings.get();
+    const lines: string[] = [];
+    let ok = true;
+    const launcherOk = isExecutable(launcher);
+    ok &&= launcherOk;
+    lines.push(`Launcher: ${launcher}${launcherOk ? "" : " (MISSING or not executable)"}`);
+    const bundled = bundledAdapterVersion(pluginDir);
+    const adapter = s.adapterCommand?.trim();
+    lines.push(
+      adapter
+        ? `ACP adapter: ${adapter} (ACP adapter command setting)`
+        : bundled
+          ? `ACP adapter: bundled @agentclientprotocol/claude-agent-acp ${bundled}`
+          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH or npx",
+    );
+    const current = await readCurrentEntry(bb);
+    let entry: CustomAgent | undefined;
+    if (current === null) {
+      ok = false;
+      lines.push("ACP customAgents entry: unknown (the ACP agents plugin's settings can't be read)");
+    } else {
+      entry = current.entry;
+      const keyFile = s.apiKey?.trim() ? await keyFilePath() : undefined;
+      const wanted = managedAgent(launcher, managedEnvFor(s, keyFile), entry);
+      const state = entry === undefined ? "MISSING" : JSON.stringify(entry) === JSON.stringify(wanted) ? "current" : "OUTDATED";
+      ok &&= state === "current";
+      lines.push(`ACP customAgents entry "${AGENT_ID}": ${state}${state === "current" ? "" : " (run: bb acp-claude-bedrock repair)"}`);
+    }
+    let registered = false;
+    try {
+      registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROVIDER_ID);
+    } catch {
+      // reported as not registered
+    }
+    ok &&= registered;
+    lines.push(`bb provider ${PROVIDER_ID}: ${registered ? "registered" : "NOT registered"}`);
+    const credentials = s.apiKey?.trim()
+      ? "API key setting"
+      : (await keychainToken())
+        ? 'macOS keychain item "claude-bedrock-token"'
+        : s.awsProfile?.trim()
+          ? `AWS profile ${s.awsProfile.trim()}`
+          : "AWS credential chain";
+    lines.push(`Credentials: ${credentials}`);
+    lines.push(`Region: ${s.region.trim() || "us-east-1"}`);
+    lines.push(`Bash sandbox in Accept Edits: ${s.sandbox === false ? "off" : "on"}`);
+    return { exitCode: ok ? 0 : 1, stdout: `${lines.join("\n")}\n` };
+  }
+
+  const commands: Record<string, () => Promise<CliResult>> = {
+    status,
+    async repair() {
+      try {
+        const changed = await sync();
+        return { exitCode: 0, stdout: `${PROVIDER_ID}: ${changed ? "repaired" : "already up to date"}\n` };
+      } catch (error) {
+        return { exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` };
+      }
+    },
+    async unregister() {
+      try {
+        const changed = await unregisterAgent(bb);
+        return {
+          exitCode: 0,
+          stdout: `${PROVIDER_ID}: ${changed ? "unregistered; remove the plugin now, or reload it to register again" : "not registered"}\n`,
+        };
+      } catch (error) {
+        return { exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` };
+      }
+    },
+  };
+
+  bb.cli.register({
+    name: "acp-claude-bedrock",
+    summary: `Check, repair or remove the ${DISPLAY_NAME} agent entry.`,
+    commands: [
+      { name: "status", summary: "Check the launcher, adapter, agent entry and provider registration", usage: "acp-claude-bedrock status" },
+      { name: "repair", summary: "Rewrite the agent entry from the plugin settings", usage: "acp-claude-bedrock repair" },
+      { name: "unregister", summary: "Remove the agent entry before removing the plugin", usage: "acp-claude-bedrock unregister" },
+    ],
+    async run(argv) {
+      const name = argv[0] ?? "status";
+      const handler = Object.hasOwn(commands, name) ? commands[name] : undefined;
+      if (handler) return handler();
+      return { exitCode: 2, stderr: `Unknown subcommand "${name}". Use: bb acp-claude-bedrock status | repair | unregister\n` };
+    },
+  });
 
   bb.rpc.register(usageRpcContract, {
     [LIST_RESOURCES]: async () => {

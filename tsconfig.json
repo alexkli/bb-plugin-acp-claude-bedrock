@@ -13,11 +13,13 @@
       "node"
     ],
     "noEmit": true,
-    "skipLibCheck": false
+    "skipLibCheck": false,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "server.ts",
     "app.tsx",
-    "ledger.ts"
+    "ledger.ts",
+    "agent-entry.ts"
   ]
 }
