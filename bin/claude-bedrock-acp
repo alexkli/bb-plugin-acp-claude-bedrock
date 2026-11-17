@@ -11,8 +11,8 @@
 # Configuration (environment, all optional):
 #   CLAUDE_BEDROCK_ENV_FILE   Shell file of `export NAME='value'` lines with the
 #                             plugin's settings; read first, so its values win.
-#   CLAUDE_BEDROCK_KEY_FILE   File with the Bedrock API key (the plugin writes it
-#                             from its settings).
+#   CLAUDE_BEDROCK_KEY_FILE   File with the Bedrock API key (the plugin names
+#                             bb's own file for its secret API key setting).
 #   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key. If unset, read from the key file,
 #                             else from the macOS
 #                             keychain (service CLAUDE_BEDROCK_KEYCHAIN_SERVICE,
@@ -21,8 +21,8 @@
 #                             credential chain (AWS_PROFILE, SSO, ...).
 #   AWS_REGION                Bedrock region (default us-east-1).
 #   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: the adapter
-#                             bundled with the plugin, else claude-agent-acp on PATH,
-#                             else npx -y @agentclientprotocol/claude-agent-acp).
+#                             bundled with the plugin, else claude-agent-acp on
+#                             PATH; nothing is downloaded).
 #   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
 #                             on PATH, else the adapter's bundled one).
 #   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS,
@@ -46,7 +46,7 @@ credentials="aws credential chain${AWS_PROFILE:+ (profile $AWS_PROFILE)}"
 if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
     credentials="api key from environment"
 elif [[ -n "${CLAUDE_BEDROCK_KEY_FILE:-}" && -r "$CLAUDE_BEDROCK_KEY_FILE" ]]; then
-    AWS_BEARER_TOKEN_BEDROCK="$(head -n 1 "$CLAUDE_BEDROCK_KEY_FILE")"
+    AWS_BEARER_TOKEN_BEDROCK="$(tr -d '[:space:]' < "$CLAUDE_BEDROCK_KEY_FILE")"
     export AWS_BEARER_TOKEN_BEDROCK
     credentials="api key from plugin settings"
 elif command -v security >/dev/null; then
@@ -72,7 +72,8 @@ elif [[ -f "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/ind
 elif command -v claude-agent-acp >/dev/null; then
     adapter=(claude-agent-acp)
 else
-    adapter=(npx -y @agentclientprotocol/claude-agent-acp)
+    echo "claude-bedrock-acp: the ACP adapter was not found: run npm install in the plugin folder, or set the ACP adapter command setting." >&2
+    exit 1
 fi
 
 # one line per launch (never the key itself), for troubleshooting

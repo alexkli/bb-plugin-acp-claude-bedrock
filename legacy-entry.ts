@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 // The agent entry earlier versions of this plugin kept in bb's ACP agents
@@ -10,7 +11,7 @@ export const ACP_PLUGIN_ID = "provider-acp";
 export const AGENT_ID = "claude-bedrock";
 
 type JsonObject = Record<string, unknown>;
-export type CustomAgent = JsonObject & { id?: unknown; env?: unknown };
+export type CustomAgent = JsonObject & { id?: unknown; command?: unknown; env?: unknown };
 
 const isObject = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -44,10 +45,29 @@ export function userEnv(entry: CustomAgent | undefined): Record<string, string> 
   return env;
 }
 
+/** The launcher's file name; 0.1.x set the entry's command to its absolute path. */
+const LAUNCHER_NAME = "claude-bedrock-acp";
+
+/** Whether an entry is the one earlier versions of this plugin added: our id, with our launcher as its command. */
+export function isOurEntry(agent: CustomAgent): boolean {
+  return agent.id === AGENT_ID && typeof agent.command === "string" && basename(agent.command) === LAUNCHER_NAME;
+}
+
 /** The customAgents list without our entry; null when it has none. */
 export function withoutLegacyEntry(agents: CustomAgent[]): CustomAgent[] | null {
-  const next = agents.filter((agent) => agent.id !== AGENT_ID);
+  const next = agents.filter((agent) => !isOurEntry(agent));
   return next.length === agents.length ? null : next;
+}
+
+/**
+ * The customAgents text for a list, in the formatting of the text it came
+ * from: the same indentation (none for a one-line list) and trailing newline.
+ */
+export function formatCustomAgents(agents: CustomAgent[], original: string): string {
+  if (agents.length === 0) return "";
+  const indent = /\n([ \t]+)\S/.exec(original)?.[1];
+  const text = indent === undefined ? JSON.stringify(agents) : JSON.stringify(agents, null, indent);
+  return original.endsWith("\n") ? `${text}\n` : text;
 }
 
 /**
@@ -59,22 +79,32 @@ export async function readLegacyEntry(bb: BbPluginApi): Promise<{ entry: CustomA
   try {
     const settings = await bb.sdk.plugins.getSettings({ pluginId: ACP_PLUGIN_ID });
     const agents = parseCustomAgents(settings.values.customAgents);
-    return { entry: agents.find((agent) => agent.id === AGENT_ID) };
+    return { entry: agents.find(isOurEntry) };
   } catch (error) {
     bb.log.warn(`Could not read ${ACP_PLUGIN_ID} customAgents: ${String(error)}`);
     return null;
   }
 }
 
-/** Removes our old entry, leaving other agents alone; true when there was one. */
+/**
+ * Removes our old entry, leaving other agents and the setting's formatting
+ * alone; true when there was one. An entry with our id that this plugin
+ * didn't add is the user's: it is kept, and the error says what to do.
+ */
 export async function removeLegacyEntry(bb: BbPluginApi): Promise<boolean> {
   const settings = await bb.sdk.plugins.getSettings({ pluginId: ACP_PLUGIN_ID });
-  const updated = withoutLegacyEntry(parseCustomAgents(settings.values.customAgents));
-  if (updated === null) return false;
-  await bb.sdk.plugins.updateSettings({
-    pluginId: ACP_PLUGIN_ID,
-    values: { customAgents: updated.length === 0 ? "" : `${JSON.stringify(updated, null, 2)}\n` },
-  });
+  const original = typeof settings.values.customAgents === "string" ? settings.values.customAgents : "";
+  const agents = parseCustomAgents(settings.values.customAgents);
+  const updated = withoutLegacyEntry(agents);
+  if (updated === null) {
+    if (agents.some((agent) => agent.id === AGENT_ID)) {
+      throw new Error(
+        `${ACP_PLUGIN_ID} has a custom agent "${AGENT_ID}" that this plugin didn't add, so it holds the provider ${"acp-" + AGENT_ID}; rename or remove that agent in the ACP agents settings`,
+      );
+    }
+    return false;
+  }
+  await bb.sdk.plugins.updateSettings({ pluginId: ACP_PLUGIN_ID, values: { customAgents: formatCustomAgents(updated, original) } });
   bb.log.info(`Removed the old ${ACP_PLUGIN_ID} customAgents entry "${AGENT_ID}"`);
   return true;
 }

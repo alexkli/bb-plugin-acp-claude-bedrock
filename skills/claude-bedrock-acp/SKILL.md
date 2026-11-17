@@ -25,7 +25,7 @@ starts.
 
 | Key | Meaning | Env for the agent |
 | --- | --- | --- |
-| `apiKey` | Bedrock API key (secret). Written to a 0600 key file; the env file has only its path. | `CLAUDE_BEDROCK_KEY_FILE` |
+| `apiKey` | Bedrock API key (secret). bb keeps it in `~/.bb/plugins/acp-claude-bedrock/secrets/apiKey`; the env file has only that path. | `CLAUDE_BEDROCK_KEY_FILE` |
 | `region` | AWS region, default `us-east-1`. | `AWS_REGION` |
 | `awsProfile` | AWS profile for the credential chain, used without an API key. | `AWS_PROFILE` |
 | `adapterCommand` | Command for a different claude-agent-acp. Default: the adapter bundled with the plugin. | `CLAUDE_AGENT_ACP` |
@@ -79,9 +79,9 @@ compaction.
 - "registered by another plugin": another plugin holds `acp-claude-bedrock`,
   e.g. an old `claude-bedrock` entry the user added back to `customAgents`.
   Remove it, then run `repair`.
-- Removing the plugin keeps its data folder
-  (`~/.bb/plugins/acp-claude-bedrock/host-data`, with the API key file);
-  delete it to remove the key copy.
+- "bb's secret file … MISSING" in `status`: the API key is set but bb keeps
+  secret settings somewhere else than this plugin expects (a bb change); the
+  launcher then falls back to the keychain or the AWS credential chain.
 - Plugin errors: `~/.bb/plugins/acp-claude-bedrock/logs/plugin.log`. Reload
   with `bb plugin reload acp-claude-bedrock`.
 - An authentication error in a thread usually means no usable credential:

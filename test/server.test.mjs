@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,10 +18,20 @@ const OLD_ENTRY = {
 /**
  * Loads the plugin against a fake bb whose ACP agents plugin stores
  * customAgents in memory and whose provider list shows what this plugin
- * registered. The API key setting keeps status() away from the real keychain.
+ * registered. The API key setting keeps status() away from the real keychain;
+ * like bb, the fake keeps it in secrets/apiKey (unless secretFile is false).
  */
-async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, acpDown = false } = {}) {
+async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, acpDown = false, secretFile = true, oldKeyFile = false } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "bedrock-server-"));
+  const pluginData = join(dataDir, "plugins", "acp-claude-bedrock");
+  if (secretFile) {
+    mkdirSync(join(pluginData, "secrets"), { recursive: true });
+    writeFileSync(join(pluginData, "secrets", "apiKey"), "test-key", { mode: 0o600 });
+  }
+  if (oldKeyFile) {
+    mkdirSync(join(pluginData, "host-data"), { recursive: true });
+    writeFileSync(join(pluginData, "host-data", "bedrock-api-key"), "old-key\n", { mode: 0o600 });
+  }
   let stored = customAgents;
   let harnessRef;
   const { bb, harness } = createFakePluginHost({
@@ -47,9 +57,10 @@ async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, acp
   });
   harnessRef = harness;
   await plugin(bb);
-  const hostData = join(dataDir, "plugins", "acp-claude-bedrock", "host-data");
+  const hostData = join(pluginData, "host-data");
+  const secret = join(pluginData, "secrets", "apiKey");
   const agents = () => (stored === "" ? [] : JSON.parse(stored));
-  return { bb, harness, hostData, agents };
+  return { bb, harness, hostData, secret, agents, raw: () => stored };
 }
 
 const cli = async (harness, ...argv) => {
@@ -57,8 +68,8 @@ const cli = async (harness, ...argv) => {
   return { exitCode, stdout, stderr };
 };
 
-test("the provider service registers acp-claude-bedrock with forks and writes the agent's settings, the key only to a 0600 file", async () => {
-  const { harness, hostData, agents } = await load();
+test("the provider service registers acp-claude-bedrock with forks and writes the agent's settings, naming bb's own secret file for the key", async () => {
+  const { harness, hostData, secret, agents } = await load({ oldKeyFile: true });
   await harness.runService("provider").done;
   assert.deepEqual(harness.needsConfigurationMessages, []);
   assert.deepEqual(harness.registrations.providerRegistrations.map((p) => [p.id, p.capabilities.fork]), [["acp-claude-bedrock", "tip"]]);
@@ -67,11 +78,10 @@ test("the provider service registers acp-claude-bedrock with forks and writes th
   assert.deepEqual(spec.env, { CLAUDE_BEDROCK_ENV_FILE: join(hostData, "agent.env") });
   const env = readFileSync(join(hostData, "agent.env"), "utf8");
   assert.match(env, /^export AWS_REGION='us-west-2'$/m);
-  assert.match(env, new RegExp(`^export CLAUDE_BEDROCK_KEY_FILE='${join(hostData, "bedrock-api-key")}'$`, "m"));
+  assert.match(env, new RegExp(`^export CLAUDE_BEDROCK_KEY_FILE='${secret}'$`, "m"));
   assert.doesNotMatch(env, /test-key/);
   assert.equal(statSync(join(hostData, "agent.env")).mode & 0o777, 0o600);
-  assert.equal(readFileSync(join(hostData, "bedrock-api-key"), "utf8"), "test-key\n");
-  assert.equal(statSync(join(hostData, "bedrock-api-key")).mode & 0o777, 0o600);
+  assert.equal(existsSync(join(hostData, "bedrock-api-key")), false, "the old key copy is removed");
   assert.deepEqual(agents(), [OTHER], "no customAgents entry any more");
 });
 
@@ -122,4 +132,28 @@ test("an unknown subcommand names the valid ones", async () => {
   const { exitCode, stderr } = await cli(harness, "unregister");
   assert.equal(exitCode, 2);
   assert.match(stderr, /status \| repair/);
+});
+
+test("without bb's secret file for the API key, bb shows the plugin as needing configuration and status fails", async () => {
+  const { harness, secret } = await load({ secretFile: false });
+  await harness.runService("provider").done;
+  assert.equal(harness.needsConfigurationMessages.length, 1);
+  assert.match(harness.needsConfigurationMessages[0], /file for the API key setting is not at .*secrets\/apiKey/);
+  const status = await cli(harness, "status");
+  assert.equal(status.exitCode, 1);
+  assert.ok(status.stdout.includes(`Credentials: API key setting (bb's secret file ${secret} MISSING`), status.stdout);
+});
+
+test("the handover keeps the customAgents formatting, and leaves a claude-bedrock agent this plugin didn't add alone", async () => {
+  const compact = await load({ customAgents: JSON.stringify([OTHER, OLD_ENTRY]) });
+  await compact.harness.runService("provider").done;
+  assert.equal(compact.raw(), JSON.stringify([OTHER]));
+
+  const usersOwn = { id: "claude-bedrock", command: "/usr/local/bin/my-claude", env: { FOO: "1" } };
+  const text = `${JSON.stringify([OTHER, usersOwn], null, 4)}\n`;
+  const kept = await load({ customAgents: text });
+  await kept.harness.runService("provider").done;
+  assert.equal(kept.raw(), text);
+  const status = await cli(kept.harness, "status");
+  assert.doesNotMatch(status.stdout, /LEFTOVER/);
 });

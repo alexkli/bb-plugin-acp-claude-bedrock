@@ -60,12 +60,12 @@ The plugin settings: API key, region, profile, adapter, Bash sandbox, budget and
    Updating from 0.1.x: see [Updating from 0.1](#updating-from-01).
 
 2. Open Settings → Plugins → **Claude Bedrock ACP provider** and set:
-   - **Bedrock API key**. bb stores it as a secret setting. The plugin writes
-     it to a file only your user can read
-     (`~/.bb/plugins/acp-claude-bedrock/host-data/bedrock-api-key`) and gives
-     the agent only that file's path, so the key never appears in the agent's
-     environment or settings file. Without a key, the launcher uses the macOS keychain item
-     `claude-bedrock-token` if present
+   - **Bedrock API key**. bb stores it as a secret setting, in a file only
+     your user can read (`~/.bb/plugins/acp-claude-bedrock/secrets/apiKey`),
+     and deletes it when the plugin is removed. The launcher reads the key
+     from that file; the plugin keeps no copy, and the key appears in no
+     settings file or bb thread event. Without a key, the launcher uses the
+     macOS keychain item `claude-bedrock-token` if present
      (`security add-generic-password -a "$USER" -s claude-bedrock-token -w`),
      else the normal AWS credential chain. Set **AWS profile** for the latter.
    - **AWS region**, default `us-east-1`.
@@ -91,9 +91,9 @@ environment variables** as `NAME=value` pairs separated by spaces, e.g.
 | --- | --- | --- |
 | AWS region | `AWS_REGION` | `us-east-1` |
 | AWS profile | `AWS_PROFILE` | unset |
-| ACP adapter command | `CLAUDE_AGENT_ACP` | the plugin's bundled adapter, else `claude-agent-acp` on PATH, else `npx` |
+| ACP adapter command | `CLAUDE_AGENT_ACP` | the plugin's bundled adapter, else `claude-agent-acp` on PATH |
 | Price factor | `CLAUDE_BEDROCK_PRICE_FACTOR` | `1` |
-| Bedrock API key | `CLAUDE_BEDROCK_KEY_FILE` (path to the key file) | unset |
+| Bedrock API key | `CLAUDE_BEDROCK_KEY_FILE` (path to bb's file for the secret setting) | unset |
 | Bash sandbox in Accept Edits | `CLAUDE_BEDROCK_SANDBOX` (`0` turns it off) | on (unset) |
 
 Launcher-only variables: `CLAUDE_CODE_EXECUTABLE` (default `claude` on PATH),
@@ -175,10 +175,9 @@ bb acp-claude-bedrock repair   # rewrite the agent settings file and register th
 
 `status` exits non-zero when something needs attention and never prints the
 API key. Removing the plugin (`bb plugin remove acp-claude-bedrock`) removes
-its provider and settings, but bb leaves the plugin's data folder in place,
-including the API key file; delete
-`~/.bb/plugins/acp-claude-bedrock/host-data` afterwards. The launcher's log,
-the cost ledger and plan copies stay in
+its provider, its settings and the API key. bb leaves the agent settings file
+(`~/.bb/plugins/acp-claude-bedrock/host-data/agent.env`, no key in it), and
+the launcher's log, the cost ledger and plan copies stay in
 `${XDG_STATE_HOME:-~/.local/state}/claude-bedrock`.
 
 ## Updating from 0.1
@@ -238,8 +237,11 @@ type-checks it. `npm test` runs the tests: the provider declaration, the
 agent settings file, the handover from 0.1, the permission mode and sandbox
 rewrite, plan approval, and the proxy and launcher end to end against a fake
 adapter (no AWS, keychain or real adapter), and the plugin itself on the
-SDK's fake host (registration, handover, setup errors, commands). CI runs
-the typecheck and tests on every push and pull request. The plugin's agent
+SDK's fake host (registration, handover, setup errors, commands). A
+conformance test runs bb's provider bridge suite (sessions, turns, resume,
+fork, interrupt) against the provider as bb runs it: the SDK's ACP bridge,
+the launcher and the proxy, with a fake adapter. CI runs the typecheck, the
+tests and `bb plugin build` on every push and pull request. The plugin's agent
 skill is in `skills/claude-bedrock-acp/SKILL.md`; bb gives it to agents in
 every thread.
 

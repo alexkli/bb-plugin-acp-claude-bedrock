@@ -19,13 +19,14 @@ import { DISPLAY_NAME, PROVIDER_ID, envFileContent, isTakenError, parseExtraEnv,
 //   customAgents entry in bb's ACP agents plugin: removes that entry (keeping
 //   the user's own variables), waits until that plugin drops the provider, and
 //   registers it. Threads store only the provider id, so they keep working;
-// - writes the settings to an env file the launcher reads on every start, and
-//   the API key (a secret setting) to a 0600 key file the env file names;
+// - writes the settings to an env file the launcher reads on every start; for
+//   the API key (a secret setting) it names bb's own secret file;
 // - adds `bb acp-claude-bedrock status | repair`; when registering fails, bb
 //   shows the plugin as needing configuration;
 // - publishes estimated spend for bb's Provider usage panel/footer through the
 //   provider-usage RPC methods below.
 const PACKAGE_NAME = "bb-plugin-acp-claude-bedrock";
+const PLUGIN_ID = "acp-claude-bedrock";
 const LIST_RESOURCES = "provider-usage.v1.listResources";
 const GET_RESOURCE = "provider-usage.v1.getResource";
 
@@ -233,10 +234,8 @@ export default function plugin(bb: BbPluginApi) {
   const pluginDir = findPluginDir();
   const launcher = join(pluginDir, "bin", "claude-bedrock-acp");
 
-  // The API key is a secret setting (bb keeps it out of its db and the
-  // frontend), so it goes into a 0600 file in this plugin's data folder; the
-  // env file the launcher reads names only that file's path.
-  async function hostDataDir(): Promise<string> {
+  // This plugin's folder in bb's data folder (<dataDir>/plugins/<plugin id>).
+  async function pluginDataDir(): Promise<string> {
     let dataDir = process.env.BB_DATA_DIR ?? join(homedir(), ".bb");
     try {
       const config = await bb.sdk.system.config();
@@ -244,25 +243,32 @@ export default function plugin(bb: BbPluginApi) {
     } catch {
       // keep the default
     }
-    return join(dataDir, "plugins", PROVIDER_ID, "host-data");
+    return join(dataDir, "plugins", PLUGIN_ID);
   }
-  const keyFilePath = async () => join(await hostDataDir(), "bedrock-api-key");
-  const envFilePath = async () => join(await hostDataDir(), "agent.env");
+  const envFilePath = async () => join(await pluginDataDir(), "host-data", "agent.env");
+  // bb keeps a secret setting as a 0600 file of the raw value in the plugin's
+  // secrets/ folder (SDK: "Stored in a 0600 file under
+  // <dataDir>/plugins/<id>/secrets/") and deletes that folder when the plugin
+  // is removed. The launcher reads the API key from there, so the plugin keeps
+  // no copy of it and nothing is left behind.
+  const secretKeyPath = async () => join(await pluginDataDir(), "secrets", "apiKey");
+  // where 0.1.x and the first 0.2 prototype copied the key
+  const oldKeyPath = async () => join(await pluginDataDir(), "host-data", "bedrock-api-key");
 
-  /** Writes the key file and the env file from the settings; the launcher reads them on every start. */
+  /** Writes the env file from the settings; the launcher reads it on every start. */
   async function writeAgentFiles(): Promise<void> {
     const s = await settings.get();
-    const keyFile = await keyFilePath();
-    const key = s.apiKey?.trim() ?? "";
-    await mkdir(dirname(keyFile), { recursive: true, mode: 0o700 });
-    if (key === "") {
-      await rm(keyFile, { force: true });
-    } else {
-      await writeFile(keyFile, `${key}\n`, { mode: 0o600 });
-      await chmod(keyFile, 0o600);
+    await rm(await oldKeyPath(), { force: true });
+    let keyFile: string | undefined;
+    if ((s.apiKey?.trim() ?? "") !== "") {
+      keyFile = await secretKeyPath();
+      if (!existsSync(keyFile)) {
+        throw new Error(`bb's file for the API key setting is not at ${keyFile}; this bb version keeps secret settings elsewhere`);
+      }
     }
     const envFile = await envFilePath();
-    await writeFile(envFile, envFileContent(agentEnvFor(s, key === "" ? undefined : keyFile)), { mode: 0o600 });
+    await mkdir(dirname(envFile), { recursive: true, mode: 0o700 });
+    await writeFile(envFile, envFileContent(agentEnvFor(s, keyFile)), { mode: 0o600 });
     await chmod(envFile, 0o600);
   }
 
@@ -336,7 +342,7 @@ export default function plugin(bb: BbPluginApi) {
         ? `ACP adapter: ${adapter} (ACP adapter command setting)`
         : bundled
           ? `ACP adapter: bundled @agentclientprotocol/claude-agent-acp ${bundled}`
-          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH or npx",
+          : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH",
     );
     let provider: { pluginId?: string; capabilities?: { supportsFork?: boolean } } | undefined;
     try {
@@ -344,7 +350,7 @@ export default function plugin(bb: BbPluginApi) {
     } catch {
       // reported as not registered
     }
-    const ours = provider?.pluginId === "acp-claude-bedrock";
+    const ours = provider?.pluginId === PLUGIN_ID;
     ok &&= ours;
     lines.push(
       `bb provider ${PROVIDER_ID}: ${
@@ -364,8 +370,11 @@ export default function plugin(bb: BbPluginApi) {
     const envOk = existsSync(envFile);
     ok &&= envOk;
     lines.push(`Agent settings file: ${envFile}${envOk ? "" : " (MISSING; run: bb acp-claude-bedrock repair)"}`);
+    let keyFileOk = true;
+    if (s.apiKey?.trim()) keyFileOk = existsSync(await secretKeyPath());
+    ok &&= keyFileOk;
     const credentials = s.apiKey?.trim()
-      ? "API key setting"
+      ? `API key setting${keyFileOk ? "" : ` (bb's secret file ${await secretKeyPath()} MISSING; this bb version keeps secrets elsewhere)`}`
       : (await keychainToken())
         ? 'macOS keychain item "claude-bedrock-token"'
         : s.awsProfile?.trim()
@@ -390,7 +399,7 @@ export default function plugin(bb: BbPluginApi) {
   };
 
   bb.cli.register({
-    name: "acp-claude-bedrock",
+    name: PLUGIN_ID,
     summary: `Check or repair the ${DISPLAY_NAME} provider.`,
     commands: [
       { name: "status", summary: "Check the launcher, adapter, provider registration and agent settings", usage: "acp-claude-bedrock status" },
