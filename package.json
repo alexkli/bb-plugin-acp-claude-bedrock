@@ -48,6 +48,6 @@
   "scripts": {
     "build": "bb plugin build .",
     "typecheck": "tsc --noEmit -p .",
-    "test": "node --test test/"
+    "test": "node --test 'test/*.test.mjs'"
   }
 }
