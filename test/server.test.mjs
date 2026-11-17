@@ -82,7 +82,7 @@ test("status passes once registered; an outdated entry fails it until repair", a
   const after = await cli(harness, "status");
   assert.equal(after.exitCode, 0, after.stdout);
   assert.match(after.stdout, /^Launcher: .*\/bin\/claude-bedrock-acp\n/);
-  assert.match(after.stdout, /ACP adapter: bundled @agentclientprotocol\/claude-agent-acp 0\.106\.0\n/);
+  assert.match(after.stdout, /ACP adapter: bundled @agentclientprotocol\/claude-agent-acp 0\.107\.3\n/);
   assert.match(after.stdout, /ACP customAgents entry "claude-bedrock": current\n/);
   assert.match(after.stdout, /bb provider acp-claude-bedrock: registered\n/);
   assert.match(after.stdout, /Credentials: API key setting\nRegion: us-west-2\nBash sandbox in Accept Edits: on\n$/);

@@ -17,8 +17,9 @@
 #                             without either, Claude Code uses the normal AWS
 #                             credential chain (AWS_PROFILE, SSO, ...).
 #   AWS_REGION                Bedrock region (default us-east-1).
-#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: claude-agent-acp
-#                             on PATH, else npx -y @agentclientprotocol/claude-agent-acp).
+#   CLAUDE_AGENT_ACP          Command of the ACP adapter (default: the adapter
+#                             bundled with the plugin, else claude-agent-acp on PATH,
+#                             else npx -y @agentclientprotocol/claude-agent-acp).
 #   CLAUDE_CODE_EXECUTABLE    Claude Code binary the adapter runs (default: claude
 #                             on PATH, else the adapter's bundled one).
 #   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS,
