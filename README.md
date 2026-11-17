@@ -27,9 +27,9 @@ Provider usage panel (bottom left):
 
 ![New thread with the Claude Code (Bedrock ACP) provider selected and its model list open; the Provider usage panel shows this month and today against the budget](docs/overview.png)
 
-The plugin settings: API key, region, adapter, budget and price factor.
+The plugin settings: API key, region, profile, adapter, Bash sandbox, budget and price factor.
 
-![Claude Bedrock ACP provider settings with API key, region, profile, adapter command, monthly budget and price factor](docs/settings.png)
+![Claude Bedrock ACP provider settings with API key, region, profile, adapter command, Bash sandbox in Accept Edits, monthly budget and price factor](docs/settings.png)
 
 ## Requirements
 
