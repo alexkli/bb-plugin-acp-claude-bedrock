@@ -1,7 +1,7 @@
 ## What you get
 
-- **Claude Code (Bedrock ACP)** as an agent in the model picker. Threads run Claude Code through the ACP adapter and bill your AWS account instead of a Claude subscription.
-- Setup in the plugin settings: Bedrock API key, AWS region or profile. The key is stored as a bb secret and never written to the agent config.
+- **Claude Code (Bedrock ACP)** as a provider in the model picker. Threads run Claude Code through the ACP adapter and bill your AWS account instead of a Claude subscription. Forks and side chats work.
+- Setup in the plugin settings: Bedrock API key, AWS region or profile. bb stores the key as a secret; the plugin hands it to the agent in a file only your user can read.
 - **Estimated spend** in the Provider usage panel and footer: this month and today, against a monthly budget you set.
 - A **price factor** for negotiated Bedrock pricing, for the cost bb shows in each thread and for the usage entry.
 - Plan mode that waits for you: when Claude finishes a plan, it opens in the side panel of the thread you're looking at and follows later revisions, and you get Claude's "Ready to code?" question, even in Full Access, where bb would otherwise approve it on its own.
@@ -9,15 +9,14 @@
 
 ## How it works
 
-The plugin ships a launcher script that runs Claude Code in Bedrock mode over ACP, using the claude-agent-acp adapter, and a small proxy that records each thread's cost in a local ledger. It registers the launcher as a custom agent in bb's ACP agents plugin and keeps that entry current across updates. The plugin uses only the public plugin SDK.
+The plugin registers its own provider, which bb runs through the plugin SDK's ACP bridge. The provider starts a launcher script that runs Claude Code in Bedrock mode over ACP with the bundled claude-agent-acp adapter, and a small proxy that records each thread's cost in a local ledger. Versions before 0.2 added a custom agent to bb's ACP agents plugin instead; the first load hands that over, and existing threads keep working.
 
 The spend figures are Claude Code's own list-price estimates, not your AWS bill.
 
 ## Requirements
 
-- bb 0.49 or later, with the built-in ACP agents plugin
-- Node.js and Claude Code
+- bb 0.49 or later, on macOS or Linux (tested on macOS); the provider runs on the machine bb runs on
+- Node.js and Claude Code (`claude` on PATH)
 - Access to the Anthropic models on Amazon Bedrock, with a Bedrock API key or AWS credentials
-- Optional: the claude-agent-acp adapter installed once; without it the launcher uses npx, which is slower to start
 
 Details: https://github.com/alexkli/bb-plugin-acp-claude-bedrock#setup

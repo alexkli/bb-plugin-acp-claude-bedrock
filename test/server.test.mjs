@@ -7,15 +7,23 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server.ts";
 
 const OTHER = { id: "gh-copilot", displayName: "GitHub Copilot", command: "copilot", args: ["--acp"] };
+const OLD_ENTRY = {
+  id: "claude-bedrock",
+  displayName: "Claude Code (Bedrock ACP)",
+  command: "/old/bin/claude-bedrock-acp",
+  args: [],
+  env: { AWS_REGION: "us-west-2", CLAUDE_BEDROCK_PRICE_FACTOR: "1", CLAUDE_BEDROCK_ASK_PLAN_APPROVAL: "0" },
+};
 
 /**
  * Loads the plugin against a fake bb whose ACP agents plugin stores
- * customAgents in memory. The API key setting keeps status() away from the
- * real keychain; the data dir is a temp folder.
+ * customAgents in memory and whose provider list shows what this plugin
+ * registered. The API key setting keeps status() away from the real keychain.
  */
-async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, registered = true, acpDown = false } = {}) {
+async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, acpDown = false } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "bedrock-server-"));
   let stored = customAgents;
+  let harnessRef;
   const { bb, harness } = createFakePluginHost({
     pluginId: "acp-claude-bedrock",
     settings: { apiKey: "test-key", region: "us-west-2", ...settings },
@@ -30,14 +38,18 @@ async function load({ customAgents = JSON.stringify([OTHER]), settings = {}, reg
           return { pluginId: "provider-acp", values };
         },
       },
-      providers: { list: async () => (registered ? [{ id: "acp-claude-bedrock" }] : []) },
+      providers: {
+        list: async () =>
+          harnessRef.registrations.providerRegistrations.map((p) => ({ id: p.id, pluginId: "acp-claude-bedrock", capabilities: { supportsFork: p.capabilities.fork !== "none" } })),
+      },
       system: { config: async () => ({ dataDir }) },
     },
   });
+  harnessRef = harness;
   await plugin(bb);
+  const hostData = join(dataDir, "plugins", "acp-claude-bedrock", "host-data");
   const agents = () => (stored === "" ? [] : JSON.parse(stored));
-  const ours = () => agents().find((agent) => agent.id === "claude-bedrock");
-  return { harness, dataDir, agents, ours };
+  return { bb, harness, hostData, agents };
 }
 
 const cli = async (harness, ...argv) => {
@@ -45,83 +57,69 @@ const cli = async (harness, ...argv) => {
   return { exitCode, stdout, stderr };
 };
 
-test("the provision service adds the entry next to other agents; the API key only as a 0600 file", async () => {
-  const { harness, dataDir, agents, ours } = await load();
-  await harness.runService("provision").done;
+test("the provider service registers acp-claude-bedrock with forks and writes the agent's settings, the key only to a 0600 file", async () => {
+  const { harness, hostData, agents } = await load();
+  await harness.runService("provider").done;
   assert.deepEqual(harness.needsConfigurationMessages, []);
-  assert.deepEqual(agents()[0], OTHER);
-  const entry = ours();
-  assert.match(entry.command, /\/bin\/claude-bedrock-acp$/);
-  assert.deepEqual(entry.permissionCli, { full: ["--bb-permission-mode=full"], workspaceWrite: ["--bb-permission-mode=accept-edits"] });
-  assert.equal(entry.supportsManualCompaction, true);
-  const keyFile = join(dataDir, "plugins", "acp-claude-bedrock", "host-data", "bedrock-api-key");
-  assert.deepEqual(entry.env, { AWS_REGION: "us-west-2", CLAUDE_BEDROCK_PRICE_FACTOR: "1", CLAUDE_BEDROCK_KEY_FILE: keyFile });
-  assert.equal(readFileSync(keyFile, "utf8"), "test-key\n");
-  assert.equal(statSync(keyFile).mode & 0o777, 0o600);
-  assert.doesNotMatch(JSON.stringify(agents()), /test-key/);
+  assert.deepEqual(harness.registrations.providerRegistrations.map((p) => [p.id, p.capabilities.fork]), [["acp-claude-bedrock", "tip"]]);
+  const spec = harness.registrations.providerRegistrations[0].experimental_bridgeOptions.acpLaunchSpec;
+  assert.match(spec.command, /\/bin\/claude-bedrock-acp$/);
+  assert.deepEqual(spec.env, { CLAUDE_BEDROCK_ENV_FILE: join(hostData, "agent.env") });
+  const env = readFileSync(join(hostData, "agent.env"), "utf8");
+  assert.match(env, /^export AWS_REGION='us-west-2'$/m);
+  assert.match(env, new RegExp(`^export CLAUDE_BEDROCK_KEY_FILE='${join(hostData, "bedrock-api-key")}'$`, "m"));
+  assert.doesNotMatch(env, /test-key/);
+  assert.equal(statSync(join(hostData, "agent.env")).mode & 0o777, 0o600);
+  assert.equal(readFileSync(join(hostData, "bedrock-api-key"), "utf8"), "test-key\n");
+  assert.equal(statSync(join(hostData, "bedrock-api-key")).mode & 0o777, 0o600);
+  assert.deepEqual(agents(), [OTHER], "no customAgents entry any more");
 });
 
-test("turning the sandbox off sets CLAUDE_BEDROCK_SANDBOX=0", async () => {
-  const { harness, ours } = await load({ settings: { sandbox: false } });
-  await harness.runService("provision").done;
-  assert.equal(ours().env.CLAUDE_BEDROCK_SANDBOX, "0");
+test("handover: the old entry is removed, other agents stay, and the user's own variables move to Extra environment variables", async () => {
+  const { harness, hostData, agents } = await load({ customAgents: JSON.stringify([OTHER, OLD_ENTRY]) });
+  await harness.runService("provider").done;
+  assert.deepEqual(agents(), [OTHER]);
+  assert.match(readFileSync(join(hostData, "agent.env"), "utf8"), /^export CLAUDE_BEDROCK_ASK_PLAN_APPROVAL='0'$/m);
+  assert.equal(harness.registrations.providerRegistrations.length, 1);
 });
 
-test("status passes once registered; an outdated entry fails it until repair", async () => {
-  const stale = { id: "claude-bedrock", displayName: "Claude Code (Bedrock ACP)", command: "/old/claude-bedrock-acp", args: [], env: {} };
-  const { harness, ours } = await load({ customAgents: JSON.stringify([OTHER, stale]) });
+test("turning the sandbox off writes CLAUDE_BEDROCK_SANDBOX=0 to the agent's settings", async () => {
+  const { harness, hostData } = await load({ settings: { sandbox: false } });
+  await harness.runService("provider").done;
+  assert.match(readFileSync(join(hostData, "agent.env"), "utf8"), /^export CLAUDE_BEDROCK_SANDBOX='0'$/m);
+});
 
+test("status: fails before registration and with a leftover entry, passes once set up; repair sets up", async () => {
+  const { harness } = await load({ customAgents: JSON.stringify([OTHER, OLD_ENTRY]) });
   const before = await cli(harness, "status");
   assert.equal(before.exitCode, 1);
-  assert.match(before.stdout, /ACP customAgents entry "claude-bedrock": OUTDATED \(run: bb acp-claude-bedrock repair\)/);
+  assert.match(before.stdout, /bb provider acp-claude-bedrock: NOT registered \(run: bb acp-claude-bedrock repair\)/);
+  assert.match(before.stdout, /Old provider-acp customAgents entry "claude-bedrock": LEFTOVER/);
 
-  const repaired = await cli(harness, "repair");
-  assert.deepEqual(repaired, { exitCode: 0, stdout: "acp-claude-bedrock: repaired\n", stderr: "" });
-  assert.match(ours().command, /\/bin\/claude-bedrock-acp$/);
-
+  assert.deepEqual(await cli(harness, "repair"), { exitCode: 0, stdout: "acp-claude-bedrock: repaired\n", stderr: "" });
   const after = await cli(harness, "status");
   assert.equal(after.exitCode, 0, after.stdout);
   assert.match(after.stdout, /^Launcher: .*\/bin\/claude-bedrock-acp\n/);
   assert.match(after.stdout, /ACP adapter: bundled @agentclientprotocol\/claude-agent-acp 0\.107\.3\n/);
-  assert.match(after.stdout, /ACP customAgents entry "claude-bedrock": current\n/);
-  assert.match(after.stdout, /bb provider acp-claude-bedrock: registered\n/);
+  assert.match(after.stdout, /bb provider acp-claude-bedrock: registered by this plugin, side chats on\n/);
+  assert.doesNotMatch(after.stdout, /LEFTOVER/);
+  assert.match(after.stdout, /Agent settings file: .*agent\.env\n/);
   assert.match(after.stdout, /Credentials: API key setting\nRegion: us-west-2\nBash sandbox in Accept Edits: on\n$/);
   assert.doesNotMatch(after.stdout, /test-key/);
   assert.deepEqual(await cli(harness, "repair"), { exitCode: 0, stdout: "acp-claude-bedrock: already up to date\n", stderr: "" });
 });
 
-test("status fails when bb has not registered the provider", async () => {
-  const { harness } = await load({ registered: false });
-  await harness.runService("provision").done;
-  const { exitCode, stdout } = await cli(harness, "status");
-  assert.equal(exitCode, 1);
-  assert.match(stdout, /bb provider acp-claude-bedrock: NOT registered/);
-});
-
-test("unregister removes only this plugin's entry", async () => {
-  const { harness, agents } = await load();
-  await harness.runService("provision").done;
-  assert.equal(agents().length, 2);
-  const first = await cli(harness, "unregister");
-  assert.equal(first.exitCode, 0);
-  assert.match(first.stdout, /unregistered/);
-  assert.deepEqual(agents(), [OTHER]);
-  assert.deepEqual(await cli(harness, "unregister"), { exitCode: 0, stdout: "acp-claude-bedrock: not registered\n", stderr: "" });
-});
-
-test("when the ACP agents plugin's settings can't be read, bb shows the plugin as needing configuration", async () => {
+test("without the ACP agents plugin there is nothing to hand over: the provider registers anyway", async () => {
   const { harness } = await load({ acpDown: true });
-  await harness.runService("provision").done;
-  assert.equal(harness.needsConfigurationMessages.length, 1);
-  assert.match(harness.needsConfigurationMessages[0], /Could not register the Claude Code \(Bedrock ACP\) agent: .*not available.*bb acp-claude-bedrock repair/);
-  const status = await cli(harness, "status");
-  assert.equal(status.exitCode, 1);
-  assert.match(status.stdout, /ACP customAgents entry: unknown/);
+  await harness.runService("provider").done;
+  assert.deepEqual(harness.needsConfigurationMessages, []);
+  assert.equal(harness.registrations.providerRegistrations.length, 1);
+  assert.equal((await cli(harness, "status")).exitCode, 0);
 });
 
 test("an unknown subcommand names the valid ones", async () => {
   const { harness } = await load();
-  const { exitCode, stderr } = await cli(harness, "nope");
+  const { exitCode, stderr } = await cli(harness, "unregister");
   assert.equal(exitCode, 2);
-  assert.match(stderr, /status \| repair \| unregister/);
+  assert.match(stderr, /status \| repair/);
 });

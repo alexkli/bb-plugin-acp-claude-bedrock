@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # bb ACP agent entry point: Claude Code on AWS Bedrock, served over ACP by
 # @agentclientprotocol/claude-agent-acp, behind claude-bedrock-acp-proxy.mjs
-# (next to this script). The bb plugin registers this script in bb's
-# provider-acp customAgents (id "claude-bedrock", provider acp-claude-bedrock)
-# and passes its settings (API key, region, ...) as the variables below.
+# (next to this script). The bb plugin registers it as the provider
+# acp-claude-bedrock (provider.ts) and writes its settings (region, key file,
+# ...) as the variables below to the file CLAUDE_BEDROCK_ENV_FILE names, which
+# this script reads first.
 #
 # stdout is the ACP channel: never print anything to it.
 #
 # Configuration (environment, all optional):
+#   CLAUDE_BEDROCK_ENV_FILE   Shell file of `export NAME='value'` lines with the
+#                             plugin's settings; read first, so its values win.
 #   CLAUDE_BEDROCK_KEY_FILE   File with the Bedrock API key (the plugin writes it
 #                             from its settings).
 #   AWS_BEARER_TOKEN_BEDROCK  Bedrock API key. If unset, read from the key file,
@@ -25,13 +28,19 @@
 #   CLAUDE_BEDROCK_PRICE_FACTOR, CLAUDE_BEDROCK_ACP_HIDE_OPTIONS,
 #   CLAUDE_BEDROCK_SANDBOX: see the proxy.
 #
-# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the agent entry's
+# Arguments: bb adds --bb-permission-mode=<full|accept-edits> (the provider's
 # permissionCli); they go to the proxy, which takes that one off.
 set -euo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # bb starts agents with a minimal PATH; add the usual install locations
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# the plugin's settings (provider.ts, envFileContent)
+if [[ -n "${CLAUDE_BEDROCK_ENV_FILE:-}" && -r "$CLAUDE_BEDROCK_ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CLAUDE_BEDROCK_ENV_FILE"
+fi
 
 credentials="aws credential chain${AWS_PROFILE:+ (profile $AWS_PROFILE)}"
 if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then

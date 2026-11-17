@@ -7,33 +7,24 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { accountId, forAccount, parseLedger, totals } from "./ledger.ts";
-import {
-  type CustomAgent,
-  type ManagedEnv,
-  AGENT_ID,
-  DISPLAY_NAME,
-  managedAgent,
-  provisionAgent,
-  readCurrentEntry,
-  unregisterAgent,
-} from "./agent-entry.ts";
+import { type CustomAgent, ACP_PLUGIN_ID, AGENT_ID, readLegacyEntry, removeLegacyEntry, userEnv } from "./legacy-entry.ts";
+import { DISPLAY_NAME, PROVIDER_ID, envFileContent, isTakenError, parseExtraEnv, providerDeclaration } from "./provider.ts";
 
-// Claude Code on AWS Bedrock as a bb ACP agent:
-// - registers the agent (id "claude-bedrock", provider "acp-claude-bedrock") in
-//   bb's ACP agents plugin, pointing at this plugin's own bin/claude-bedrock-acp,
-//   from a background service on every load and on settings changes (the install
-//   folder changes with each plugin update); when that fails, bb shows the plugin
-//   as needing configuration;
-// - adds `bb acp-claude-bedrock status | repair | unregister`;
-// - passes region, price factor and the other settings to that agent through
-//   the entry's env; the API key (a secret setting) goes to a 0600 file whose
-//   path the launcher gets, so it never lands in the ACP agents config;
+// Claude Code on AWS Bedrock as a bb provider:
+// - registers the provider "acp-claude-bedrock" itself (provider.ts): bb runs
+//   this plugin's bin/claude-bedrock-acp through the SDK's ACP bridge, which the
+//   plugin's bb.host entry (host.ts) re-exports. The declaration adds bb's
+//   permission modes, /compact and forks (side chats);
+// - hands the provider over from earlier versions, which registered it as a
+//   customAgents entry in bb's ACP agents plugin: removes that entry (keeping
+//   the user's own variables), waits until that plugin drops the provider, and
+//   registers it. Threads store only the provider id, so they keep working;
+// - writes the settings to an env file the launcher reads on every start, and
+//   the API key (a secret setting) to a 0600 key file the env file names;
+// - adds `bb acp-claude-bedrock status | repair`; when registering fails, bb
+//   shows the plugin as needing configuration;
 // - publishes estimated spend for bb's Provider usage panel/footer through the
-//   provider-usage RPC methods below;
-// - declares bb's permission modes (permissionCli) and manual compaction in the
-//   entry, so Accept Edits runs Bash in Claude Code's sandbox (see
-//   bin/acp-session.mjs) and /compact shows in the composer.
-const PROVIDER_ID = "acp-claude-bedrock";
+//   provider-usage RPC methods below.
 const PACKAGE_NAME = "bb-plugin-acp-claude-bedrock";
 const LIST_RESOURCES = "provider-usage.v1.listResources";
 const GET_RESOURCE = "provider-usage.v1.getResource";
@@ -87,11 +78,14 @@ type Settings = {
   adapterCommand?: string;
   sandbox: boolean;
   priceFactor: number;
+  extraEnv?: string;
 };
 
-/** The entry's env for these settings; keyFile is the API key file's path when there is a key. */
-export function managedEnvFor(s: Settings, keyFile: string | undefined): ManagedEnv {
+/** The agent's environment for these settings; keyFile is the API key file's path when there is a key. */
+export function agentEnvFor(s: Settings, keyFile: string | undefined): Record<string, string | undefined> {
   return {
+    // the user's own variables first, so the settings below win
+    ...parseExtraEnv(s.extraEnv),
     AWS_REGION: s.region.trim() || "us-east-1",
     AWS_PROFILE: s.awsProfile?.trim(),
     CLAUDE_AGENT_ACP: s.adapterCommand?.trim(),
@@ -100,6 +94,41 @@ export function managedEnvFor(s: Settings, keyFile: string | undefined): Managed
     // only the opt-out is set, so the default leaves the entry unchanged
     CLAUDE_BEDROCK_SANDBOX: s.sandbox === false ? "0" : undefined,
   };
+}
+
+const HANDOVER_ATTEMPTS = 40;
+const HANDOVER_DELAY_MS = 250;
+
+/**
+ * Registers the provider, handing it over from bb's ACP agents plugin when that
+ * still holds the id (an earlier version's customAgents entry): removes the
+ * entry, then retries until that plugin has dropped the provider. Throws when
+ * the id stays taken.
+ */
+export async function registerWithHandover(deps: {
+  register: () => { dispose(): void };
+  removeLegacyEntry: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  attempts?: number;
+}): Promise<{ registration: { dispose(): void }; handedOver: boolean }> {
+  const attempts = deps.attempts ?? HANDOVER_ATTEMPTS;
+  let removed = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return { registration: deps.register(), handedOver: removed };
+    } catch (error) {
+      if (!isTakenError(error)) throw error;
+      if (!removed) removed = await deps.removeLegacyEntry();
+      if (attempt + 1 >= attempts) {
+        throw new Error(
+          removed
+            ? `${ACP_PLUGIN_ID} still holds the provider ${PROVIDER_ID} after its entry was removed`
+            : `the provider ${PROVIDER_ID} is registered by another plugin (see: bb provider list)`,
+        );
+      }
+      await deps.sleep(HANDOVER_DELAY_MS);
+    }
+  }
 }
 
 const isExecutable = (path: string) => {
@@ -193,16 +222,21 @@ export default function plugin(bb: BbPluginApi) {
       description: "Multiplier on Claude Code's list-price cost estimate, for a negotiated Bedrock discount or markup (e.g. 0.8 for 20% below list). Applies to the cost shown in threads and to the usage entry. 1 shows list price.",
       default: 1,
     },
+    extraEnv: {
+      type: "string",
+      label: "Extra environment variables",
+      description:
+        "Optional NAME=value pairs, separated by spaces, for the agent, e.g. CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0 or ANTHROPIC_MODEL=... The settings above win over these. A change applies when a thread's agent next starts.",
+    },
   });
 
   const pluginDir = findPluginDir();
   const launcher = join(pluginDir, "bin", "claude-bedrock-acp");
 
   // The API key is a secret setting (bb keeps it out of its db and the
-  // frontend). bb's ACP agents plugin only passes an agent's configured env to
-  // the agent process, so the key goes into a 0600 file in this plugin's data
-  // folder and the agent entry carries only that file's path.
-  async function keyFilePath(): Promise<string> {
+  // frontend), so it goes into a 0600 file in this plugin's data folder; the
+  // env file the launcher reads names only that file's path.
+  async function hostDataDir(): Promise<string> {
     let dataDir = process.env.BB_DATA_DIR ?? join(homedir(), ".bb");
     try {
       const config = await bb.sdk.system.config();
@@ -210,50 +244,82 @@ export default function plugin(bb: BbPluginApi) {
     } catch {
       // keep the default
     }
-    return join(dataDir, "plugins", "acp-claude-bedrock", "host-data", "bedrock-api-key");
+    return join(dataDir, "plugins", PROVIDER_ID, "host-data");
   }
+  const keyFilePath = async () => join(await hostDataDir(), "bedrock-api-key");
+  const envFilePath = async () => join(await hostDataDir(), "agent.env");
 
-  async function syncKeyFile(apiKey: string | undefined): Promise<string | undefined> {
-    const path = await keyFilePath();
-    const key = apiKey?.trim() ?? "";
-    if (key === "") {
-      await rm(path, { force: true });
-      return undefined;
-    }
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await writeFile(path, `${key}\n`, { mode: 0o600 });
-    await chmod(path, 0o600);
-    return path;
-  }
-
-  /** Writes the key file and adds or updates the agent entry; true when the entry changed. */
-  async function provision(): Promise<boolean> {
-    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
+  /** Writes the key file and the env file from the settings; the launcher reads them on every start. */
+  async function writeAgentFiles(): Promise<void> {
     const s = await settings.get();
-    const keyFile = await syncKeyFile(s.apiKey);
-    return provisionAgent(bb, launcher, managedEnvFor(s, keyFile));
+    const keyFile = await keyFilePath();
+    const key = s.apiKey?.trim() ?? "";
+    await mkdir(dirname(keyFile), { recursive: true, mode: 0o700 });
+    if (key === "") {
+      await rm(keyFile, { force: true });
+    } else {
+      await writeFile(keyFile, `${key}\n`, { mode: 0o600 });
+      await chmod(keyFile, 0o600);
+    }
+    const envFile = await envFilePath();
+    await writeFile(envFile, envFileContent(agentEnvFor(s, key === "" ? undefined : keyFile)), { mode: 0o600 });
+    await chmod(envFile, 0o600);
   }
 
-  // one provisioning at a time; a failure marks the plugin as needing configuration
-  let provisioning: Promise<unknown> = Promise.resolve();
+  /** Carries the user's own variables from an earlier version's entry over to the Extra environment variables setting. */
+  async function carryOverUserEnv(entry: CustomAgent | undefined): Promise<void> {
+    const extra = userEnv(entry);
+    if (Object.keys(extra).length === 0) return;
+    const current = parseExtraEnv((await settings.get()).extraEnv);
+    const merged = { ...extra, ...current };
+    await settings.experimental_set({ extraEnv: Object.entries(merged).map(([k, v]) => `${k}=${v}`).join(" ") });
+    bb.log.info(`Carried over ${Object.keys(extra).join(", ")} from the old agent entry to Extra environment variables`);
+  }
+
+  let registration: { dispose(): void } | null = null;
+
+  /** Writes the agent's files, registers the provider (handing it over from an old entry) and removes a leftover entry; true when anything changed. */
+  async function setUp(): Promise<boolean> {
+    if (!isExecutable(launcher)) throw new Error(`the launcher ${launcher} is missing or not executable; reinstall the plugin`);
+    const legacy = await readLegacyEntry(bb);
+    if (legacy?.entry !== undefined) await carryOverUserEnv(legacy.entry);
+    await writeAgentFiles();
+    let changed = false;
+    if (registration === null) {
+      const declaration = providerDeclaration(launcher, await envFilePath());
+      const result = await registerWithHandover({
+        register: () => bb.providers.register(declaration),
+        removeLegacyEntry: () => removeLegacyEntry(bb),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      registration = result.registration;
+      changed = true;
+      bb.log.info(`Registered the ${DISPLAY_NAME} provider ${PROVIDER_ID}${result.handedOver ? ` (handed over from ${ACP_PLUGIN_ID})` : ""}`);
+    }
+    // registered first (e.g. this plugin loaded before the ACP agents plugin): the old entry is only in the way
+    if (legacy?.entry !== undefined && (await removeLegacyEntry(bb))) changed = true;
+    return changed;
+  }
+
+  // one setup at a time; a failure marks the plugin as needing configuration
+  let settingUp: Promise<unknown> = Promise.resolve();
   const sync = () => {
-    const run = provisioning.then(provision);
-    provisioning = run.catch((error: unknown) => {
-      const message = `Could not register the ${DISPLAY_NAME} agent: ${error instanceof Error ? error.message : String(error)}`;
+    const run = settingUp.then(setUp);
+    settingUp = run.catch((error: unknown) => {
+      const message = `Could not register the ${DISPLAY_NAME} provider: ${error instanceof Error ? error.message : String(error)}`;
       bb.log.error(message);
       bb.status.needsConfiguration(`${message}. Fix it, then run: bb acp-claude-bedrock repair`);
     });
     return run;
   };
 
-  // after the factory, so a slow ACP agents plugin doesn't hold up loading
-  bb.background.service("provision", {
+  bb.background.service("provider", {
     async start() {
       await sync().catch(() => {});
     },
   });
   settings.onChange(() => {
-    void sync().catch(() => {});
+    void settingUp.then(writeAgentFiles).catch((error: unknown) => bb.log.error(`Could not write the agent's files: ${String(error)}`));
   });
 
   async function status(): Promise<CliResult> {
@@ -272,27 +338,32 @@ export default function plugin(bb: BbPluginApi) {
           ? `ACP adapter: bundled @agentclientprotocol/claude-agent-acp ${bundled}`
           : "ACP adapter: NOT BUNDLED (run npm install in the plugin folder); falls back to claude-agent-acp on PATH or npx",
     );
-    const current = await readCurrentEntry(bb);
-    let entry: CustomAgent | undefined;
-    if (current === null) {
-      ok = false;
-      lines.push("ACP customAgents entry: unknown (the ACP agents plugin's settings can't be read)");
-    } else {
-      entry = current.entry;
-      const keyFile = s.apiKey?.trim() ? await keyFilePath() : undefined;
-      const wanted = managedAgent(launcher, managedEnvFor(s, keyFile), entry);
-      const state = entry === undefined ? "MISSING" : JSON.stringify(entry) === JSON.stringify(wanted) ? "current" : "OUTDATED";
-      ok &&= state === "current";
-      lines.push(`ACP customAgents entry "${AGENT_ID}": ${state}${state === "current" ? "" : " (run: bb acp-claude-bedrock repair)"}`);
-    }
-    let registered = false;
+    let provider: { pluginId?: string; capabilities?: { supportsFork?: boolean } } | undefined;
     try {
-      registered = (await bb.sdk.providers.list()).some((provider) => provider.id === PROVIDER_ID);
+      provider = (await bb.sdk.providers.list()).find((p) => p.id === PROVIDER_ID) as typeof provider;
     } catch {
       // reported as not registered
     }
-    ok &&= registered;
-    lines.push(`bb provider ${PROVIDER_ID}: ${registered ? "registered" : "NOT registered"}`);
+    const ours = provider?.pluginId === "acp-claude-bedrock";
+    ok &&= ours;
+    lines.push(
+      `bb provider ${PROVIDER_ID}: ${
+        provider === undefined
+          ? "NOT registered (run: bb acp-claude-bedrock repair)"
+          : ours
+            ? `registered by this plugin${provider.capabilities?.supportsFork ? ", side chats on" : ""}`
+            : `registered by ${provider.pluginId ?? "another plugin"} (run: bb acp-claude-bedrock repair)`
+      }`,
+    );
+    const legacy = await readLegacyEntry(bb);
+    if (legacy?.entry !== undefined) {
+      ok = false;
+      lines.push(`Old ${ACP_PLUGIN_ID} customAgents entry "${AGENT_ID}": LEFTOVER (run: bb acp-claude-bedrock repair)`);
+    }
+    const envFile = await envFilePath();
+    const envOk = existsSync(envFile);
+    ok &&= envOk;
+    lines.push(`Agent settings file: ${envFile}${envOk ? "" : " (MISSING; run: bb acp-claude-bedrock repair)"}`);
     const credentials = s.apiKey?.trim()
       ? "API key setting"
       : (await keychainToken())
@@ -316,32 +387,20 @@ export default function plugin(bb: BbPluginApi) {
         return { exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` };
       }
     },
-    async unregister() {
-      try {
-        const changed = await unregisterAgent(bb);
-        return {
-          exitCode: 0,
-          stdout: `${PROVIDER_ID}: ${changed ? "unregistered; remove the plugin now, or reload it to register again" : "not registered"}\n`,
-        };
-      } catch (error) {
-        return { exitCode: 1, stderr: `${error instanceof Error ? error.message : String(error)}\n` };
-      }
-    },
   };
 
   bb.cli.register({
     name: "acp-claude-bedrock",
-    summary: `Check, repair or remove the ${DISPLAY_NAME} agent entry.`,
+    summary: `Check or repair the ${DISPLAY_NAME} provider.`,
     commands: [
-      { name: "status", summary: "Check the launcher, adapter, agent entry and provider registration", usage: "acp-claude-bedrock status" },
-      { name: "repair", summary: "Rewrite the agent entry from the plugin settings", usage: "acp-claude-bedrock repair" },
-      { name: "unregister", summary: "Remove the agent entry before removing the plugin", usage: "acp-claude-bedrock unregister" },
+      { name: "status", summary: "Check the launcher, adapter, provider registration and agent settings", usage: "acp-claude-bedrock status" },
+      { name: "repair", summary: "Rewrite the agent's settings and register the provider again", usage: "acp-claude-bedrock repair" },
     ],
     async run(argv) {
       const name = argv[0] ?? "status";
       const handler = Object.hasOwn(commands, name) ? commands[name] : undefined;
       if (handler) return handler();
-      return { exitCode: 2, stderr: `Unknown subcommand "${name}". Use: bb acp-claude-bedrock status | repair | unregister\n` };
+      return { exitCode: 2, stderr: `Unknown subcommand "${name}". Use: bb acp-claude-bedrock status | repair\n` };
     },
   });
 

@@ -167,3 +167,14 @@ test("launcher: the ACP adapter command setting wins over the bundled adapter", 
   assert.equal(sandboxOf(received), undefined);
   assert.match(readFileSync(join(dir, "state", "claude-bedrock", "launcher.log"), "utf8"), /credentials=aws credential chain adapter=\//);
 });
+
+test("launcher: reads the plugin's settings from CLAUDE_BEDROCK_ENV_FILE, which wins over its own environment", async () => {
+  const { dir, launcher } = pluginCopy();
+  const keyFile = join(dir, "key");
+  writeFileSync(keyFile, "file-key\n");
+  const envFile = join(dir, "agent.env");
+  writeFileSync(envFile, `export AWS_REGION='eu-central-1'\nexport CLAUDE_BEDROCK_KEY_FILE='${keyFile}'\nexport CLAUDE_BEDROCK_SANDBOX='0'\n`);
+  const received = await launch(launcher, dir, ["--bb-permission-mode=accept-edits"], { CLAUDE_BEDROCK_ENV_FILE: envFile, AWS_REGION: "us-east-2" });
+  assert.deepEqual(received[0].params, { argv: [], useBedrock: "1", region: "eu-central-1", token: "file-key" });
+  assert.equal(sandboxOf(received), undefined, "the sandbox setting from the file applies");
+});

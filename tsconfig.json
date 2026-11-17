@@ -20,6 +20,8 @@
     "server.ts",
     "app.tsx",
     "ledger.ts",
-    "agent-entry.ts"
+    "legacy-entry.ts",
+    "provider.ts",
+    "host.ts"
   ]
 }

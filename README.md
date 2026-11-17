@@ -12,13 +12,13 @@ as **Claude Code (Bedrock ACP)** in the provider picker. It has these parts:
   applies the price factor to the cost bb shows, hides the subagent picker
   option, records spend in a local ledger, and makes plan mode ask before it
   implements (see [Plan mode](#plan-mode)).
-- The bb plugin. It registers the launcher as the custom agent `claude-bedrock`
-  (provider `acp-claude-bedrock`) in bb's ACP agents plugin and keeps that entry
-  up to date, declares bb's permission modes and `/compact` for it, passes
-  the plugin settings to the agent, gives the provider the
-  Claude mark with an AWS badge as its icon (monochrome, to tell it apart from
-  the colored icon of the Claude Bedrock provider plugin), and adds an
-  estimated-spend entry to bb's Provider usage panel. It uses only the public plugin SDK.
+- The bb plugin. It registers the provider `acp-claude-bedrock` itself, which
+  bb runs through the plugin SDK's ACP bridge, with bb's permission modes,
+  `/compact`, forks and side chats. It passes the plugin settings to the
+  agent, gives the provider the Claude mark with an AWS badge as its icon
+  (monochrome, to tell it apart from the colored icon of the Claude Bedrock
+  provider plugin), and adds an estimated-spend entry to bb's Provider usage
+  panel. It uses only the public plugin SDK.
 
 ## Screenshots
 
@@ -33,7 +33,7 @@ The plugin settings: API key, region, profile, adapter, Bash sandbox, budget and
 
 ## Requirements
 
-- bb 0.49 or later, with the built-in ACP agents plugin (`provider-acp`).
+- bb 0.49 or later.
 - Node.js and [Claude Code](https://claude.com/claude-code) (`claude` on PATH).
   Without `claude`, the ACP adapter uses its bundled Claude Code.
 - Bedrock access to the Anthropic models, and either a
@@ -53,20 +53,18 @@ The plugin settings: API key, region, profile, adapter, Bash sandbox, budget and
    bb plugin install .
    ```
 
-   On load, the plugin adds **Claude Code (Bedrock ACP)** to bb's ACP agents.
-   It updates that entry on every load and settings change, so a plugin update
-   that moves the launcher needs no action. Other custom agents are left
-   alone. If it can't (for example because the ACP agents plugin is disabled),
-   bb shows the plugin as needing configuration, with the reason.
+   On load, the plugin registers the provider **Claude Code (Bedrock ACP)**.
+   If that fails, bb shows the plugin as needing configuration, with the
+   reason. Check the setup with `bb acp-claude-bedrock status`.
 
-   Check the setup with `bb acp-claude-bedrock status`.
+   Updating from 0.1.x: see [Updating from 0.1](#updating-from-01).
 
 2. Open Settings → Plugins → **Claude Bedrock ACP provider** and set:
    - **Bedrock API key**. bb stores it as a secret setting. The plugin writes
      it to a file only your user can read
      (`~/.bb/plugins/acp-claude-bedrock/host-data/bedrock-api-key`) and gives
-     the agent only that file's path, so the key never appears in the ACP
-     agents config. Without a key, the launcher uses the macOS keychain item
+     the agent only that file's path, so the key never appears in the agent's
+     environment or settings file. Without a key, the launcher uses the macOS keychain item
      `claude-bedrock-token` if present
      (`security add-generic-password -a "$USER" -s claude-bedrock-token -w`),
      else the normal AWS credential chain. Set **AWS profile** for the latter.
@@ -82,9 +80,12 @@ The plugin settings: API key, region, profile, adapter, Bash sandbox, budget and
 
 ### Settings and launcher variables
 
-The plugin passes its settings to the agent as environment variables in the
-agent entry. You can add more variables to the entry's `env` in the ACP agents
-settings; the plugin keeps them.
+The plugin writes its settings as environment variables to a file only your
+user can read (`~/.bb/plugins/acp-claude-bedrock/host-data/agent.env`), which
+the launcher reads on every start. A change applies when a thread's agent
+next starts. To pass other variables to the agent, add them to **Extra
+environment variables** as `NAME=value` pairs separated by spaces, e.g.
+`CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0`; the settings in the table win over them.
 
 | Setting | Variable | Default |
 | --- | --- | --- |
@@ -105,7 +106,7 @@ adapter; never the key) to `~/.local/state/claude-bedrock/launcher.log`.
 ## Permission modes and the sandbox
 
 bb offers ACP agents two permission modes, **Accept Edits** and **Full
-Access**. The plugin declares both in the agent entry (`permissionCli`): bb
+Access**. The plugin declares both for its provider (`permissionCli`): bb
 starts the launcher with `--bb-permission-mode=accept-edits` or
 `--bb-permission-mode=full`, and restarts the agent with the new value when a
 thread's mode changes. The proxy takes that argument off the adapter's command
@@ -128,7 +129,8 @@ sets itself wins. Claude Code's own permission mode (Auto, Default, ...) is a
 separate session option of the adapter and isn't changed.
 
 `/compact` is available in the composer (`supportsManualCompaction`): the
-adapter runs Claude Code's own compaction.
+adapter runs Claude Code's own compaction. Forks and side chats work too
+(`fork: "tip"`): the adapter forks the Claude Code session.
 
 The proxy also turns Claude Code's prompt suggestions off on every session
 start (`promptSuggestions: false`). The ACP adapter turns them on for every
@@ -161,25 +163,41 @@ Your answer goes back to Claude as the permission decision. To change the
 plan, pick "No, keep planning": Claude stays in plan mode and the turn ends,
 so send your feedback as a message and Claude revises the plan (the adapter
 takes no text with the answer itself). Dismissing the question also keeps
-Claude in plan mode. Set `CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0` in the agent's
-`env` to leave the request to bb instead.
+Claude in plan mode. Add `CLAUDE_BEDROCK_ASK_PLAN_APPROVAL=0` to **Extra
+environment variables** to leave the request to bb instead.
 
 ## Commands
 
 ```sh
-bb acp-claude-bedrock status      # launcher, adapter, agent entry, provider, credential source
-bb acp-claude-bedrock repair      # rewrite the agent entry from the plugin settings
-bb acp-claude-bedrock unregister  # remove the agent entry
+bb acp-claude-bedrock status   # launcher, adapter, provider, agent settings file, credential source
+bb acp-claude-bedrock repair   # rewrite the agent settings file and register the provider again
 ```
 
 `status` exits non-zero when something needs attention and never prints the
-API key. bb has no uninstall hook, so remove the agent entry before removing
-the plugin:
+API key. Removing the plugin (`bb plugin remove acp-claude-bedrock`) removes
+its provider and settings, but bb leaves the plugin's data folder in place,
+including the API key file; delete
+`~/.bb/plugins/acp-claude-bedrock/host-data` afterwards. The launcher's log,
+the cost ledger and plan copies stay in
+`${XDG_STATE_HOME:-~/.local/state}/claude-bedrock`.
 
-```sh
-bb acp-claude-bedrock unregister
-bb plugin remove acp-claude-bedrock
-```
+## Updating from 0.1
+
+Versions 0.1.x added the agent as a custom agent (`claude-bedrock`) to bb's
+ACP agents plugin, which registered the provider for it. From 0.2 the plugin
+registers the same provider itself, which gives it forks and side chats; bb
+turns those off for custom agents.
+
+The first load of 0.2 hands the provider over: it removes the `claude-bedrock`
+entry from the ACP agents plugin's settings (other custom agents are left
+alone), waits until that plugin drops the provider, and registers it. The
+provider id stays `acp-claude-bedrock`, so existing threads continue with
+their Claude Code sessions. Variables you had added to the entry's `env` move
+to **Extra environment variables**. There is nothing to do before updating,
+and the `unregister` command of 0.1 is gone.
+
+Going back to 0.1.x: remove 0.2 first, then install the older version, which
+adds its entry again. Both can't hold the provider id at the same time.
 
 ## Usage entry
 
@@ -208,19 +226,19 @@ key on this machine; lines without `acct` count for every credential. Only
 spend recorded in the ledger is counted. This is an estimate, not your
 AWS bill.
 
-bb lists the entry under the raw provider id, because ACP custom agents don't
-have the usage capability. Setting `"providerUsage": true` on the custom agent
-fixes the name, but then bb's ACP plugin also adds an empty "Usage
-unavailable" card for it.
+bb lists the entry under the raw provider id: the Provider usage panel takes
+the name only from providers that declare the usage capability, and this one
+doesn't.
 
 ## Development
 
 `npm run build` (`bb plugin build .`) compiles the plugin into `dist/`, and
 `bb plugin reload acp-claude-bedrock` reloads it. `npm run typecheck`
-type-checks it. `npm test` runs the tests: the agent entry, the permission
-mode and sandbox rewrite, plan approval, and the proxy and launcher end to end
-against a fake adapter (no AWS, keychain or real adapter), and the plugin
-itself on the SDK's fake host (agent entry, setup errors, commands). CI runs
+type-checks it. `npm test` runs the tests: the provider declaration, the
+agent settings file, the handover from 0.1, the permission mode and sandbox
+rewrite, plan approval, and the proxy and launcher end to end against a fake
+adapter (no AWS, keychain or real adapter), and the plugin itself on the
+SDK's fake host (registration, handover, setup errors, commands). CI runs
 the typecheck and tests on every push and pull request. The plugin's agent
 skill is in `skills/claude-bedrock-acp/SKILL.md`; bb gives it to agents in
 every thread.
