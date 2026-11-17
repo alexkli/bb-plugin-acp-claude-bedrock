@@ -52,6 +52,9 @@ fi
 
 if [[ -n "${CLAUDE_AGENT_ACP:-}" ]]; then
     read -r -a adapter <<<"$CLAUDE_AGENT_ACP"
+elif [[ -f "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js" ]]; then
+    # the adapter bundled with this plugin (a dependency in package.json)
+    adapter=(node "$here/../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js")
 elif command -v claude-agent-acp >/dev/null; then
     adapter=(claude-agent-acp)
 else

@@ -111,7 +111,7 @@ export default function plugin(bb: BbPluginApi) {
       type: "string",
       label: "ACP adapter command",
       description:
-        "Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: claude-agent-acp on PATH, else npx.",
+        "Optional command that runs @agentclientprotocol/claude-agent-acp, e.g. a pinned install. Default: the adapter bundled with the plugin.",
     },
     monthlyBudgetUsd: {
       type: "number",

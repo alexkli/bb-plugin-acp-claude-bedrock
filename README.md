@@ -65,14 +65,10 @@ The plugin settings: API key, region, adapter, budget and price factor.
      else the normal AWS credential chain. Set **AWS profile** for the latter.
    - **AWS region**, default `us-east-1`.
 
-3. Optional: install the ACP adapter once. Without it, the launcher runs it
-   through `npx`, which is slower to start:
-
-   ```sh
-   npm install -g @agentclientprotocol/claude-agent-acp
-   ```
-
-   Or point **ACP adapter command** at a pinned install, e.g.
+3. The ACP adapter ships with the plugin as a dependency
+   (`@agentclientprotocol/claude-agent-acp`, installed by `npm install`), so
+   there is nothing to install. To use a different one, point **ACP adapter
+   command** at it, e.g.
    `node /path/to/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js`.
 
 4. Pick **Claude Code (Bedrock ACP)** in a new thread.
@@ -87,7 +83,7 @@ settings; the plugin keeps them.
 | --- | --- | --- |
 | AWS region | `AWS_REGION` | `us-east-1` |
 | AWS profile | `AWS_PROFILE` | unset |
-| ACP adapter command | `CLAUDE_AGENT_ACP` | `claude-agent-acp` on PATH, else `npx` |
+| ACP adapter command | `CLAUDE_AGENT_ACP` | the plugin's bundled adapter, else `claude-agent-acp` on PATH, else `npx` |
 | Price factor | `CLAUDE_BEDROCK_PRICE_FACTOR` | `1` |
 | Bedrock API key | `CLAUDE_BEDROCK_KEY_FILE` (path to the key file) | unset |
 

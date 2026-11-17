@@ -41,6 +41,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.106.0",
     "zod": "^4.6.7"
   },
   "scripts": {
